@@ -1,9 +1,10 @@
 "use client";
 
 import { pdfjs } from "react-pdf";
+import { ensurePdfWorker } from "@/lib/pdf-worker";
 import type { NormalizedRect } from "@/lib/types";
 
-pdfjs.GlobalWorkerOptions.workerSrc = "/pdf.worker.min.mjs";
+ensurePdfWorker();
 
 export function clonePdfBytes(source: Uint8Array) {
   return new Uint8Array(source.slice());

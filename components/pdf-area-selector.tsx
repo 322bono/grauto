@@ -1,11 +1,12 @@
 "use client";
 
 import { startTransition, useEffect, useMemo, useRef, useState } from "react";
-import { Document, Page, pdfjs } from "react-pdf";
+import { Document, Page } from "react-pdf";
+import { ensurePdfWorker } from "@/lib/pdf-worker";
 import type { AnswerPagePayload, NormalizedRect, SelectedQuestionRegionPayload } from "@/lib/types";
 import { clonePdfBytes, cropCanvasToDataUrl, extractPdfTextSnippets, normalizeRect } from "@/lib/pdf-utils";
 
-pdfjs.GlobalWorkerOptions.workerSrc = "/pdf.worker.min.mjs";
+ensurePdfWorker();
 
 type DraftRegion = {
   id: string;
