@@ -15,6 +15,12 @@ interface ResultsDashboardProps {
   onRequestAnalysis?: (selectionId: string) => Promise<void>;
 }
 
+interface ImageViewerState {
+  src: string;
+  alt: string;
+  title: string;
+}
+
 export function ResultsDashboard({
   result,
   questionSelections,
@@ -25,6 +31,7 @@ export function ResultsDashboard({
 }: ResultsDashboardProps) {
   const noteRef = useRef<HTMLDivElement | null>(null);
   const [loadingAnalysisId, setLoadingAnalysisId] = useState<string | null>(null);
+  const [viewer, setViewer] = useState<ImageViewerState | null>(null);
 
   const selectionMap = useMemo(
     () => new Map(questionSelections.map((selection) => [selection.id, selection])),
@@ -70,14 +77,12 @@ export function ResultsDashboard({
   }
 
   return (
-    <div className="stack">
-      <div className="card pad stack">
-        <div className="selector-head">
+    <div className="results-shell stack">
+      <section className="results-report-card">
+        <div className="results-report-head">
           <div>
-            <h2 className="section-title">채점 결과 리포트</h2>
-            <p className="subtle">
-              기본 채점은 빠르게 처리하고, 오답 분석은 필요한 문항에서만 버튼으로 따로 요청하도록 구성했습니다.
-            </p>
+            <span className="results-report-kicker">Grauto</span>
+            <h2 className="results-report-title">채점 리포트</h2>
           </div>
           <div className="button-row">
             <button
@@ -89,58 +94,50 @@ export function ResultsDashboard({
                 }
               }}
             >
-              오답 노트 PDF 저장
+              오답 노트 PDF
             </button>
             <button type="button" className="cta ghost" onClick={() => window.print()}>
-              오답 노트 인쇄
+              인쇄
             </button>
           </div>
         </div>
 
-        <div className="summary-grid">
-          <div className="metric-card">
-            <span className="subtle">총 문제 수</span>
-            <strong>{result.summary.totalQuestions}</strong>
-          </div>
-          <div className="metric-card">
-            <span className="subtle">정답 수</span>
-            <strong>{result.summary.correctCount}</strong>
-          </div>
-          <div className="metric-card">
-            <span className="subtle">오답 수</span>
-            <strong>{result.summary.incorrectCount}</strong>
-          </div>
-          <div className="metric-card">
-            <span className="subtle">정확도</span>
-            <strong>{Math.round(result.summary.accuracyRate * 100)}%</strong>
-          </div>
-        </div>
+        <div className="results-report-body">
+          <ReportRing
+            total={result.summary.totalQuestions}
+            correct={result.summary.correctCount}
+            incorrect={result.summary.incorrectCount}
+            reviewRequired={result.summary.reviewRequiredCount}
+          />
 
-        <div className="detail-row">
-          <strong>취약 유형</strong>
-          <div className="button-row" style={{ marginTop: 8 }}>
+          <div className="results-report-stats">
+            <MetricLine label="오답" value={`${result.summary.incorrectCount}개`} tone="danger" />
+            <MetricLine label="정답" value={`${result.summary.correctCount}개`} tone="info" />
+            <MetricLine label="확인 필요" value={`${result.summary.reviewRequiredCount}개`} tone="success" />
+          </div>
+
+          <div className="results-report-copy">
+            <p className="results-report-accuracy">정답률 {(result.summary.accuracyRate * 100).toFixed(1)}%</p>
+            <p className="results-report-quote">“{buildReportQuote(result.summary.accuracyRate)}”</p>
+            <p className="results-report-note">{sanitizeText(result.summary.encouragement, "결과를 바탕으로 다음 복습 포인트를 정리해 보세요.")}</p>
             {result.summary.weakAreas.length > 0 ? (
-              result.summary.weakAreas.map((area) => (
-                <span key={area} className="status warn">
-                  {area}
-                </span>
-              ))
-            ) : (
-              <span className="status ok">아직 뚜렷한 취약 유형은 보이지 않습니다.</span>
-            )}
+              <div className="results-weak-list">
+                {result.summary.weakAreas.map((area) => (
+                  <span key={area} className="results-weak-pill">
+                    {area}
+                  </span>
+                ))}
+              </div>
+            ) : null}
           </div>
-          <p className="subtle" style={{ marginBottom: 0 }}>
-            {result.summary.encouragement}
-          </p>
         </div>
 
-        <div className="button-row">
+        <div className="results-question-nav">
           {sortedQuestions.map((question, index) => (
             <button
               key={question.selectionId}
               type="button"
-              className="question-nav-button"
-              style={{ padding: "10px 14px" }}
+              className="results-question-jump"
               onClick={() =>
                 document.getElementById(`question-${question.selectionId}`)?.scrollIntoView({ behavior: "smooth", block: "start" })
               }
@@ -149,149 +146,158 @@ export function ResultsDashboard({
             </button>
           ))}
         </div>
-      </div>
+      </section>
 
-      <div className="card-list stack">
+      <div className="results-question-list stack">
         {sortedQuestions.map((question, index) => {
           const selection = selectionMap.get(question.selectionId);
           const answerPage = question.matchedAnswerPageNumber ? answerPageMap.get(question.matchedAnswerPageNumber) : undefined;
           const pageQuestions = question.matchedAnswerPageNumber ? pageQuestionMap.get(question.matchedAnswerPageNumber) ?? [question] : [question];
           const explanationRect = resolveLocalExplanationRect(question, pageQuestions);
-          const isAnalyzing = loadingAnalysisId === question.selectionId;
           const analysis = normalizeAnalysis(question.deepAnalysis);
+          const isAnalyzing = loadingAnalysisId === question.selectionId;
 
           return (
-            <article className="card question-card" id={`question-${question.selectionId}`} key={question.selectionId}>
-              <div className="question-head">
+            <article className="result-question-card" id={`question-${question.selectionId}`} key={question.selectionId}>
+              <div className="result-card-head">
                 <div>
-                  <h3 style={{ margin: 0 }}>{question.questionNumber ?? index + 1}번 문항</h3>
-                  <p className="subtle" style={{ marginBottom: 0 }}>
-                    {question.detectedHeaderText || `페이지 ${selection?.pageNumber ?? "-"} 기준으로 매칭했습니다.`}
+                  <h3 className="result-card-title">{question.questionNumber ?? index + 1}번 문제</h3>
+                  <p className="result-card-subtitle">
+                    {sanitizeText(question.detectedHeaderText, `페이지 ${selection?.pageNumber ?? "-"} 기준으로 매칭했습니다.`)}
                   </p>
                 </div>
                 <div className="button-row">
-                  <span className={`status ${question.isCorrect ? "ok" : "danger"}`}>{question.isCorrect ? "정답" : "오답"}</span>
-                  {question.reviewRequired ? <span className="status warn">재검토 필요</span> : null}
-                  {question.overrideApplied ? <span className="status ok">수동 수정됨</span> : null}
+                  <StatusBadge type={question.isCorrect ? "correct" : "wrong"} />
+                  {question.reviewRequired ? <span className="results-mini-pill warning">재확인 필요</span> : null}
                 </div>
               </div>
 
-              <div className="question-body">
-                <div className="stack">
-                  <div className="detail-grid">
-                    <div className="detail-row">
-                      <strong>문제</strong>
-                      <div style={{ marginTop: 12 }}>
-                        {selection ? <img alt="선택한 문제 영역" src={selection.snapshotDataUrl} /> : <div className="empty">문제 이미지가 없습니다.</div>}
-                      </div>
-                    </div>
+              <button
+                type="button"
+                className="result-question-stage"
+                onClick={() =>
+                  selection
+                    ? setViewer({
+                        src: selection.snapshotDataUrl,
+                        alt: `${question.questionNumber ?? index + 1}번 문제`,
+                        title: `${question.questionNumber ?? index + 1}번 문제`
+                      })
+                    : null
+                }
+              >
+                {selection ? (
+                  <img alt={`${question.questionNumber ?? index + 1}번 문제`} src={selection.snapshotDataUrl} />
+                ) : (
+                  <div className="empty">문제 이미지를 찾지 못했습니다.</div>
+                )}
+                <span className="result-zoom-hint">눌러서 확대</span>
+              </button>
 
-                    <div className="detail-row">
-                      <strong>해설</strong>
-                      <div style={{ marginTop: 12 }}>
-                        {answerPage && explanationRect ? (
-                          <CroppedImage imageDataUrl={answerPage.pageImageDataUrl} rect={explanationRect} />
-                        ) : answerPage ? (
-                          <img alt="매칭된 답안 페이지" src={answerPage.pageImageDataUrl} />
-                        ) : (
-                          <div className="empty">매칭된 답안 페이지가 없습니다.</div>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="detail-grid">
-                  <div className="detail-row">
-                    <strong>기본 채점</strong>
-                    <p style={{ marginBottom: 0 }}>
-                      학생 답안: {question.studentAnswer || "미인식"} <br />
-                      정답: {question.correctAnswer || "미인식"} <br />
-                      유형: {questionTypeLabel(question.questionType)} <br />
-                      정답 여부: {String(question.isCorrect)} <br />
-                      신뢰도: {Math.round(question.confidence * 100)}%
-                    </p>
-                  </div>
-
-                  <div className="detail-row">
-                    <strong>풀이 흔적</strong>
-                    <p style={{ marginBottom: 0 }}>
-                      판정: {authenticityLabel(question.workEvidence.authenticity)} <br />
-                      근거: {question.workEvidence.rationale} <br />
-                      인식된 흔적: {question.workEvidence.detectedMarks.join(", ") || "없음"}
-                    </p>
-                  </div>
-
-                  <div className="detail-row">
-                    <strong>{question.isCorrect ? "짧은 해설 메모" : "오답 메모"}</strong>
-                    <p style={{ marginBottom: 0 }}>
-                      판단 메모: {question.feedback.mistakeReason}
-                      <br />
-                      해설 요약: {question.feedback.explanation}
-                      <br />
-                      복습 포인트: {question.feedback.recommendedReview}
-                    </p>
-                  </div>
-
-                  <div className="button-row">
-                    <button type="button" className="cta ghost" onClick={() => void onManualOverride(question.selectionId, true)}>
-                      정답으로 수정
-                    </button>
-                    <button type="button" className="cta ghost" onClick={() => void onManualOverride(question.selectionId, false)}>
-                      오답으로 수정
-                    </button>
-                    {!question.isCorrect ? (
-                      <button
-                        type="button"
-                        className="cta ghost"
-                        disabled={!onRequestAnalysis || isAnalyzing}
-                        onClick={() => void handleAnalysisClick(question.selectionId)}
-                      >
-                        {isAnalyzing ? "분석 중..." : analysis ? "분석 다시 요청" : "오답 분석 요청"}
+              <div className="result-lower-grid">
+                <section className="result-info-panel">
+                  <div className="result-panel-head">
+                    <strong>채점 정보</strong>
+                    <div className="result-override-actions">
+                      <button type="button" className="results-mini-button" onClick={() => void onManualOverride(question.selectionId, true)}>
+                        정답 처리
                       </button>
-                    ) : null}
+                      <button type="button" className="results-mini-button" onClick={() => void onManualOverride(question.selectionId, false)}>
+                        오답 처리
+                      </button>
+                    </div>
                   </div>
+
+                  <ResultFactRow
+                    label="학생의 답"
+                    value={displayAnswer(question.studentAnswer)}
+                    tone={question.isCorrect ? "success" : "danger"}
+                  />
+                  <ResultFactRow label="정답" value={displayAnswer(question.correctAnswer)} tone="success" />
+                  <ResultFactRow label="유형" value={questionTypeLabel(question.questionType)} tone="neutral" />
+                  <ResultFactRow label="판정" value={question.isCorrect ? "정답" : "오답"} tone={question.isCorrect ? "success" : "danger"} />
+                  <ResultFactRow label="신뢰도" value={confidenceLabel(question.confidence)} tone={confidenceTone(question.confidence)} />
+
+                  {renderWorkSummary(question) ? (
+                    <p className="result-work-summary">{renderWorkSummary(question)}</p>
+                  ) : null}
+
+                  {!question.isCorrect && onRequestAnalysis ? (
+                    <button
+                      type="button"
+                      className="results-analysis-button"
+                      disabled={isAnalyzing}
+                      onClick={() => void handleAnalysisClick(question.selectionId)}
+                    >
+                      {isAnalyzing ? "분석 중..." : analysis ? "오답 분석 다시 요청" : "오답 분석 요청"}
+                    </button>
+                  ) : null}
 
                   {analysis ? (
-                    <div className="analysis-card">
-                      <div className="analysis-card-head">
-                        <strong>오답 분석</strong>
-                        <span className="status warn">버튼 호출</span>
-                      </div>
-                      <div className="detail-row">
-                        <strong>단계별 이유</strong>
-                        <ol className="analysis-list">
-                          {analysis.reasonSteps.map((step) => (
-                            <li key={step}>{step}</li>
-                          ))}
-                        </ol>
-                      </div>
-                      <div className="detail-row">
-                        <strong>답지 해설 기준</strong>
-                        <p style={{ marginBottom: 0 }}>{analysis.answerSheetBasis}</p>
-                      </div>
-                      <div className="detail-row">
-                        <strong>한 줄 요약</strong>
-                        <p style={{ marginBottom: 0 }}>{analysis.oneLineSummary}</p>
-                      </div>
+                    <div className="result-analysis-summary">
+                      <strong>오답 포인트</strong>
+                      <p>{sanitizeText(analysis.oneLineSummary, sanitizeText(question.feedback.mistakeReason, "다시 한 번 풀이 순서를 점검해 보세요."))}</p>
                     </div>
                   ) : null}
-                </div>
+                </section>
+
+                <section className="result-explanation-panel">
+                  <div className="result-panel-head">
+                    <strong>{question.isCorrect ? "문제 해설" : "문항 해설"}</strong>
+                  </div>
+
+                  {answerPage && explanationRect ? (
+                    <button
+                      type="button"
+                      className="result-explanation-preview"
+                      onClick={() =>
+                        setViewer({
+                          src: answerPage.pageImageDataUrl,
+                          alt: `${question.questionNumber ?? index + 1}번 해설`,
+                          title: `${question.questionNumber ?? index + 1}번 해설`
+                        })
+                      }
+                    >
+                      <CroppedImage imageDataUrl={answerPage.pageImageDataUrl} rect={explanationRect} />
+                      <span className="result-zoom-hint">눌러서 확대</span>
+                    </button>
+                  ) : (
+                    <div className="empty">해설 이미지를 찾지 못했습니다.</div>
+                  )}
+
+                  <div className="result-explanation-copy">
+                    <p>
+                      {question.isCorrect
+                        ? sanitizeText(question.feedback.explanation, "답지 해설 이미지를 눌러 자세히 확인해 보세요.")
+                        : sanitizeText(
+                            analysis?.answerSheetBasis || question.feedback.explanation,
+                            "답지 해설을 다시 읽고 조건과 순서를 먼저 점검해 보세요."
+                          )}
+                    </p>
+
+                    {!question.isCorrect && analysis?.reasonSteps?.length ? (
+                      <ul className="result-reason-list">
+                        {analysis.reasonSteps.slice(0, 3).map((step) => (
+                          <li key={step}>{sanitizeText(step, "")}</li>
+                        ))}
+                      </ul>
+                    ) : null}
+                  </div>
+                </section>
               </div>
             </article>
           );
         })}
       </div>
 
-      <div className="card pad print-note-host">
+      <section className="card pad print-note-host results-note-host">
         <div className="selector-head">
           <div>
-            <h2 className="section-title">자동 오답 노트</h2>
-            <p className="subtle">틀린 문제만 따로 모아 문제 이미지와 해설을 다시 볼 수 있게 정리했습니다.</p>
+            <h2 className="section-title">오답 노트</h2>
+            <p className="subtle">틀린 문제만 따로 모아 다시 볼 수 있게 정리했습니다.</p>
           </div>
         </div>
 
-        <div className="note-sheet" ref={noteRef}>
+        <div className="note-sheet results-note-sheet" ref={noteRef}>
           {wrongQuestions.length > 0 ? (
             wrongQuestions.map((question) => {
               const selection = selectionMap.get(question.selectionId);
@@ -301,36 +307,161 @@ export function ResultsDashboard({
               const analysis = normalizeAnalysis(question.deepAnalysis);
 
               return (
-                <div className="note-card" key={`note-${question.selectionId}`} data-note-card="true">
-                  <h3 style={{ marginTop: 0 }}>{question.questionNumber ?? "?"}번</h3>
-                  <div className="question-body">
+                <div className="note-card results-note-card" key={`note-${question.selectionId}`} data-note-card="true">
+                  <h3>{question.questionNumber ?? "?"}번</h3>
+                  <div className="result-lower-grid">
                     <div className="stack">
-                      {selection ? <img alt="오답 문제 영역" src={selection.snapshotDataUrl} /> : null}
-                      <div className="detail-row">
-                        <strong>틀린 이유</strong>
-                        <p style={{ marginBottom: 0 }}>{analysis?.oneLineSummary || question.feedback.mistakeReason}</p>
-                      </div>
+                      {selection ? <img alt={`${question.questionNumber ?? "?"}번 문제`} src={selection.snapshotDataUrl} /> : null}
+                      <p className="result-note-copy">{sanitizeText(analysis?.oneLineSummary || question.feedback.mistakeReason, "오답 이유를 다시 확인해 보세요.")}</p>
                     </div>
                     <div className="stack">
                       {answerPage && explanationRect ? (
                         <CroppedImage imageDataUrl={answerPage.pageImageDataUrl} rect={explanationRect} />
                       ) : answerPage ? (
-                        <img alt="정답 해설" src={answerPage.pageImageDataUrl} />
+                        <img alt={`${question.questionNumber ?? "?"}번 해설`} src={answerPage.pageImageDataUrl} />
                       ) : null}
-                      <div className="detail-row">
-                        <strong>답지 해설</strong>
-                        <p style={{ marginBottom: 0 }}>{question.feedback.explanation}</p>
-                      </div>
+                      <p className="result-note-copy">
+                        {sanitizeText(analysis?.answerSheetBasis || question.feedback.explanation, "답지 해설 이미지를 함께 보며 다시 정리해 보세요.")}
+                      </p>
                     </div>
                   </div>
                 </div>
               );
             })
           ) : (
-            <div className="empty">현재 오답이 없습니다. 이 상태 그대로 PDF로 저장하면 전체 해설 리포트처럼 활용할 수 있습니다.</div>
+            <div className="empty">오답이 없어서 오답 노트는 비어 있습니다.</div>
           )}
         </div>
+      </section>
+
+      {viewer ? (
+        <div className="image-viewer-backdrop" onClick={() => setViewer(null)}>
+          <div className="image-viewer-card" onClick={(event) => event.stopPropagation()}>
+            <div className="image-viewer-head">
+              <strong>{viewer.title}</strong>
+              <button type="button" className="results-mini-button" onClick={() => setViewer(null)}>
+                닫기
+              </button>
+            </div>
+            <img alt={viewer.alt} src={viewer.src} />
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function ReportRing({
+  total,
+  correct,
+  incorrect,
+  reviewRequired
+}: {
+  total: number;
+  correct: number;
+  incorrect: number;
+  reviewRequired: number;
+}) {
+  const segments = total
+    ? [
+        { color: "#ff6b6b", value: incorrect / total },
+        { color: "#3b82f6", value: correct / total },
+        { color: "#8fd14f", value: reviewRequired / total }
+      ].filter((segment) => segment.value > 0)
+    : [];
+
+  let offset = 0;
+
+  return (
+    <div className="results-ring-shell">
+      <svg className="results-ring" viewBox="0 0 120 120" aria-hidden="true">
+        <circle cx="60" cy="60" r="46" className="results-ring-track" pathLength="100" />
+        {segments.map((segment) => {
+          const currentOffset = offset;
+          offset += segment.value * 100;
+
+          return (
+            <circle
+              key={`${segment.color}-${currentOffset}`}
+              cx="60"
+              cy="60"
+              r="46"
+              pathLength="100"
+              className="results-ring-segment"
+              style={{
+                stroke: segment.color,
+                strokeDasharray: `${segment.value * 100} 100`,
+                strokeDashoffset: `${-currentOffset}`
+              }}
+            />
+          );
+        })}
+      </svg>
+      <div className="results-ring-label">
+        <strong>
+          {correct}/{Math.max(total, 1)}
+        </strong>
       </div>
+    </div>
+  );
+}
+
+function MetricLine({
+  label,
+  value,
+  tone
+}: {
+  label: string;
+  value: string;
+  tone: "danger" | "info" | "success";
+}) {
+  return (
+    <div className={`results-metric-line ${tone}`}>
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
+  );
+}
+
+function StatusBadge({ type }: { type: "correct" | "wrong" }) {
+  return <span className={`results-status-badge ${type}`}>{type === "correct" ? "정답" : "오답"}</span>;
+}
+
+function ResultFactRow({
+  label,
+  value,
+  tone
+}: {
+  label: string;
+  value: string;
+  tone: "success" | "danger" | "neutral";
+}) {
+  return (
+    <div className="result-fact-row">
+      <span>{label}</span>
+      <strong className={`tone-${tone}`}>{value}</strong>
+    </div>
+  );
+}
+
+function CroppedImage({
+  imageDataUrl,
+  rect
+}: {
+  imageDataUrl: string;
+  rect: QuestionResult["explanationRegion"];
+}) {
+  const safeRect = clampBoundingBox(rect);
+
+  if (!safeRect) {
+    return <img alt="해설 원본" src={imageDataUrl} />;
+  }
+
+  const styles = renderCropStyle(safeRect);
+
+  return (
+    <div className="crop-frame">
+      <img alt="잘라낸 해설 영역" src={imageDataUrl} style={styles.img} />
     </div>
   );
 }
@@ -354,32 +485,55 @@ function normalizeAnalysis(analysis?: QuestionDeepAnalysis | null) {
   }
 
   return {
-    reasonSteps: reasonSteps.length > 0 ? reasonSteps : ["추가 분석 결과가 비어 있습니다."],
-    answerSheetBasis: analysis.answerSheetBasis || "답지 해설 기준 문장을 아직 정리하지 못했습니다.",
-    oneLineSummary: oneLineSummary || "개념 연결과 풀이 순서를 다시 점검해 보세요."
+    reasonSteps: reasonSteps.length > 0 ? reasonSteps : ["오답 분석 결과를 아직 만들지 못했습니다."],
+    answerSheetBasis: sanitizeText(analysis.answerSheetBasis, "답지 해설 핵심을 아직 정리하지 못했습니다."),
+    oneLineSummary: sanitizeText(oneLineSummary, "개념과 풀이 순서를 다시 점검해 보세요.")
   };
 }
 
-function CroppedImage({
-  imageDataUrl,
-  rect
-}: {
-  imageDataUrl: string;
-  rect: QuestionResult["explanationRegion"];
-}) {
-  const safeRect = clampBoundingBox(rect);
+function displayAnswer(value: string) {
+  const sanitized = sanitizeText(value, "X");
+  return sanitized === "미인식" ? "X" : sanitized;
+}
 
-  if (!safeRect) {
-    return <img alt="원본 페이지" src={imageDataUrl} />;
+function confidenceLabel(confidence: number) {
+  if (confidence >= 0.78) {
+    return "높음";
   }
 
-  const styles = renderCropStyle(safeRect);
+  if (confidence >= 0.46) {
+    return "보통";
+  }
 
-  return (
-    <div className="crop-frame">
-      <img alt="잘라낸 해설 영역" src={imageDataUrl} style={styles.img} />
-    </div>
-  );
+  return "낮음";
+}
+
+function confidenceTone(confidence: number): "success" | "danger" | "neutral" {
+  if (confidence >= 0.78) {
+    return "success";
+  }
+
+  if (confidence >= 0.46) {
+    return "neutral";
+  }
+
+  return "danger";
+}
+
+function renderWorkSummary(question: QuestionResult) {
+  if (question.workEvidence.extractedWork) {
+    return `풀이 흔적: ${sanitizeText(question.workEvidence.extractedWork, "")}`;
+  }
+
+  if (question.workEvidence.detectedMarks.length > 0) {
+    return `표시 흔적: ${question.workEvidence.detectedMarks.join(", ")}`;
+  }
+
+  if (question.workEvidence.authenticity !== "unclear") {
+    return `풀이 판정: ${authenticityLabel(question.workEvidence.authenticity)}`;
+  }
+
+  return "";
 }
 
 function questionTypeLabel(type: QuestionResult["questionType"]) {
@@ -391,21 +545,53 @@ function questionTypeLabel(type: QuestionResult["questionType"]) {
     case "essay":
       return "서술형";
     default:
-      return type;
+      return "문항";
   }
 }
 
 function authenticityLabel(type: QuestionResult["workEvidence"]["authenticity"]) {
   switch (type) {
     case "solved":
-      return "직접 풀이 흔적이 있습니다";
+      return "직접 풀이함";
     case "guessed":
-      return "찍은 가능성이 높습니다";
+      return "찍은 가능성";
     case "blank":
-      return "거의 비어 있습니다";
+      return "풀이 흔적 적음";
     case "unclear":
-      return "판단이 애매합니다";
+      return "판단 어려움";
     default:
-      return type;
+      return "판단 어려움";
   }
+}
+
+function buildReportQuote(rate: number) {
+  if (rate >= 0.95) {
+    return "Almost perfect, keep the rhythm.";
+  }
+
+  if (rate >= 0.75) {
+    return "Great things take time.";
+  }
+
+  if (rate >= 0.5) {
+    return "Step by step gets you there.";
+  }
+
+  return "One more round, a better result.";
+}
+
+function sanitizeText(value: string | undefined | null, fallback: string) {
+  const normalized = (value ?? "").replace(/\s+/g, " ").trim();
+
+  if (!normalized) {
+    return fallback;
+  }
+
+  const noisyMarkers = ["Unexpected end of JSON", "데모 결과", "GEMINI_API_KEY", "fallback", "환경 변수를 확인"];
+
+  if (noisyMarkers.some((marker) => normalized.includes(marker))) {
+    return fallback;
+  }
+
+  return normalized;
 }
