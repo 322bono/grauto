@@ -1,17 +1,11 @@
 import type { Metadata } from "next";
-import { Gaegu, Noto_Sans_KR, Space_Grotesk } from "next/font/google";
+import { Gaegu, Noto_Sans_KR } from "next/font/google";
 import "./globals.css";
 
 const bodyFont = Noto_Sans_KR({
   variable: "--font-body",
   preload: false,
   weight: ["400", "500", "700", "900"]
-});
-
-const displayFont = Space_Grotesk({
-  subsets: ["latin"],
-  variable: "--font-display",
-  weight: ["500", "700"]
 });
 
 const handFont = Gaegu({
@@ -32,7 +26,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="ko">
-      <body suppressHydrationWarning className={`${bodyFont.variable} ${displayFont.variable} ${handFont.variable}`}>
+      <body suppressHydrationWarning className={`${bodyFont.variable} ${handFont.variable}`}>
         {children}
       </body>
     </html>
