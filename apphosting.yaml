@@ -1,0 +1,14 @@
+runConfig:
+  cpu: 1
+  memoryMiB: 1024
+  minInstances: 0
+  maxInstances: 2
+
+env:
+  - variable: OPENAI_VISION_MODEL
+    value: gpt-4.1
+    availability:
+      - BUILD
+      - RUNTIME
+  - variable: OPENAI_API_KEY
+    secret: openAiApiKey
