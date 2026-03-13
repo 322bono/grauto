@@ -44,7 +44,6 @@ export function RecordsPage() {
   const [selectedRecord, setSelectedRecord] = useState<StoredExamRecord | null>(null);
   const [selectedCloudRecord, setSelectedCloudRecord] = useState<CloudExamRecord | null>(null);
   const [isLoadingDetail, setIsLoadingDetail] = useState(false);
-  const [statusMessage, setStatusMessage] = useState("");
 
   useEffect(() => {
     void refreshLocalRecords();
@@ -93,7 +92,6 @@ export function RecordsPage() {
       record.cloudSync ? cloudRecords.find((cloudRecord) => cloudRecord.id === record.cloudSync?.remoteId) ?? null : null
     );
     setSelectedRecord(record);
-    setStatusMessage("로컬에 저장된 상세 채점 결과를 불러왔습니다.");
   }
 
   async function handleViewCloudRecord(record: CloudExamRecord) {
@@ -105,7 +103,6 @@ export function RecordsPage() {
     }
 
     if (!record.detailJsonUrl) {
-      setStatusMessage("이 클라우드 기록에는 상세 결과 파일이 없어 요약만 확인할 수 있습니다.");
       return;
     }
 
@@ -120,7 +117,6 @@ export function RecordsPage() {
       };
 
       setSelectedRecord(enrichedRecord);
-      setStatusMessage("클라우드에 저장된 상세 채점 결과를 불러왔습니다.");
       await saveRecord(enrichedRecord);
       await refreshLocalRecords();
     } catch (error) {
@@ -158,7 +154,6 @@ export function RecordsPage() {
     }
 
     await refreshLocalRecords();
-    setStatusMessage("기록을 삭제했습니다.");
   }
 
   async function handleDeleteCloudOnlyRecord(record: CloudExamRecord) {
@@ -179,7 +174,6 @@ export function RecordsPage() {
       setSelectedRecord(null);
     }
 
-    setStatusMessage("클라우드 기록을 삭제했습니다.");
   }
 
   async function handleManualOverride(selectionId: string, isCorrect: boolean) {
@@ -201,9 +195,6 @@ export function RecordsPage() {
 
     if (authUser && syncedCloud) {
       await updateCloudRecordSummary(authUser.uid, updatedRecord, updatedResult);
-      setStatusMessage("수동 수정 내용을 로컬과 클라우드 기록에 반영했습니다.");
-    } else {
-      setStatusMessage("수동 수정 내용을 로컬 기록에 반영했습니다.");
     }
   }
 
@@ -271,9 +262,6 @@ export function RecordsPage() {
 
       if (authUser && syncedCloud) {
         await updateCloudRecordSummary(authUser.uid, updatedRecord, updatedRecord.result);
-        setStatusMessage("추가 분석 결과를 로컬과 클라우드 기록에 저장했습니다.");
-      } else {
-        setStatusMessage("추가 분석 결과를 로컬 기록에 저장했습니다.");
       }
     } catch (error) {
       window.alert(error instanceof Error ? error.message : "추가 분석 요청에 실패했습니다.");
@@ -299,17 +287,7 @@ export function RecordsPage() {
           <h1>채점 기록</h1>
           <p>문제 PDF, 답지 PDF, 문항별 채점 결과와 해설 이미지를 다시 확인할 수 있는 기록 공간입니다.</p>
         </div>
-        <div className="hero-chip-row">
-          <span className="status warn">로컬 기록 {localRecords.length}개</span>
-          {authUser ? (
-            <span className="status ok">클라우드 기록 {cloudRecords.length}개</span>
-          ) : (
-            <span className="status warn">로그인하면 클라우드 기록도 함께 볼 수 있습니다</span>
-          )}
-        </div>
       </section>
-
-      {statusMessage ? <div className="banner-card">{statusMessage}</div> : null}
 
       <section className="records-section stack">
         <div className="selector-head">

@@ -69,7 +69,6 @@ export function AutoGraderApp() {
   const [authUser, setAuthUser] = useState<AuthUserProfile | null>(null);
   const [isSigningIn, setIsSigningIn] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
-  const [syncMessage, setSyncMessage] = useState("");
 
   const effectiveAnswerFile = uploadMode === "single" ? questionFile : answerFile;
   const uploadReady = Boolean(questionFile && effectiveAnswerFile);
@@ -112,8 +111,7 @@ export function AutoGraderApp() {
     setIsSigningIn(true);
 
     try {
-      const user = await signInWithGoogle();
-      setSyncMessage(`${user.displayName} 계정으로 연결되었습니다. 이제 채점 결과와 PDF를 클라우드에 저장할 수 있습니다.`);
+      await signInWithGoogle();
       setMenuOpen(false);
     } catch (error) {
       window.alert(error instanceof Error ? error.message : "Google 로그인에 실패했습니다.");
@@ -126,7 +124,6 @@ export function AutoGraderApp() {
     try {
       await signOutUser();
       setCurrentCloudSync(undefined);
-      setSyncMessage("로그아웃되었습니다. 이후 채점 결과는 현재 브라우저 로컬 기록에만 저장됩니다.");
       setMenuOpen(false);
     } catch (error) {
       window.alert(error instanceof Error ? error.message : "로그아웃에 실패했습니다.");
@@ -150,9 +147,7 @@ export function AutoGraderApp() {
         record,
         questionFile: questionPdf,
         answerFile: answerPdf,
-        onProgress: (progress, syncStage) => {
-          setSyncMessage(`${syncStage} (${Math.round(progress * 100)}%)`);
-        }
+        onProgress: () => {}
       });
 
       const cloudSync: CloudSyncState = {
@@ -171,11 +166,9 @@ export function AutoGraderApp() {
 
       await persistLocalRecord(syncedRecord);
       setCurrentCloudSync(cloudSync);
-      setSyncMessage("PDF 업로드와 클라우드 기록 저장이 완료되었습니다.");
 
       return syncedRecord;
     } catch (error) {
-      setSyncMessage("클라우드 동기화에 실패해 현재 결과는 로컬 기록에만 저장했습니다.");
       window.alert(error instanceof Error ? error.message : "클라우드 업로드에 실패했습니다.");
       return record;
     } finally {
@@ -236,8 +229,6 @@ export function AutoGraderApp() {
       if (authUser) {
         nextRecord = await syncCurrentRecordToCloud(nextRecord, questionFile, effectiveAnswerFile);
         setCurrentCloudSync(nextRecord.cloudSync);
-      } else {
-        setSyncMessage("비로그인 상태입니다. 이번 채점 결과는 현재 브라우저 로컬 기록에만 저장됩니다.");
       }
 
       setWorkspaceStep("results");
@@ -274,7 +265,6 @@ export function AutoGraderApp() {
     if (authUser && currentCloudSync) {
       try {
         await updateCloudRecordSummary(authUser.uid, updatedRecord, updated);
-        setSyncMessage("수동 수정 내용이 클라우드 기록에도 반영되었습니다.");
       } catch (error) {
         window.alert(error instanceof Error ? error.message : "클라우드 기록 갱신에 실패했습니다.");
       }
@@ -353,9 +343,6 @@ export function AutoGraderApp() {
 
       if (authUser && currentCloudSync) {
         await updateCloudRecordSummary(authUser.uid, updatedRecord, updatedResult);
-        setSyncMessage("추가 분석 결과를 로컬과 클라우드 기록에 저장했습니다.");
-      } else {
-        setSyncMessage("추가 분석 결과를 현재 로컬 기록에 저장했습니다.");
       }
     } catch (error) {
       window.alert(error instanceof Error ? error.message : "추가 분석 요청에 실패했습니다.");
@@ -377,7 +364,6 @@ export function AutoGraderApp() {
     setCurrentRecordId(null);
     setCurrentRecordCreatedAt(null);
     setCurrentCloudSync(undefined);
-    setSyncMessage("");
     setWorkspaceStep("metadata");
 
     if (mode === "single") {
@@ -477,8 +463,6 @@ export function AutoGraderApp() {
           </div>
         )}
 
-        {syncMessage ? <div className="detail-row">{syncMessage}</div> : null}
-
         <div className="menu-meta menu-meta-auth">
           <Link className="drawer-record-link" href="/records" onClick={() => setMenuOpen(false)}>
             <span className="drawer-record-arrow">↗</span>
@@ -569,8 +553,6 @@ export function AutoGraderApp() {
         </section>
       ) : (
         <>
-          {syncMessage ? <div className="banner-card">{syncMessage}</div> : null}
-
           <section className="workspace-shell stack">
             <div className="workspace-top">
               <button type="button" className="cta ghost" onClick={() => setStage("landing")}>
@@ -708,11 +690,6 @@ export function AutoGraderApp() {
                 </div>
 
                 <div className="card pad step-actions">
-                  <div className="subtle">
-                    {authUser
-                      ? "로그인 상태에서는 채점 결과와 PDF가 클라우드에도 저장됩니다."
-                      : "비로그인 상태에서는 채점 결과가 현재 브라우저 로컬 기록에만 저장됩니다."}
-                  </div>
                   <div className="button-row">
                     <button type="button" className="cta ghost" onClick={moveToPreviousStep}>
                       이전
