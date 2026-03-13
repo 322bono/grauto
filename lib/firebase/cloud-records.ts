@@ -1,7 +1,7 @@
 "use client";
 
 import { deleteDoc, collection, doc, onSnapshot, orderBy, query, setDoc } from "firebase/firestore";
-import { firestore } from "@/lib/firebase/client";
+import { firebaseConfigured, firestore } from "@/lib/firebase/client";
 import type { CloudExamRecord, GradeResponsePayload, StoredExamRecord } from "@/lib/types";
 
 interface SyncExamRecordInput {
@@ -24,6 +24,14 @@ interface CloudUploadResponse {
 interface DetailUploadResponse {
   detailJsonUrl: string;
   detailStoragePath: string;
+}
+
+function requireFirestore() {
+  if (!firebaseConfigured || !firestore) {
+    throw new Error("Firebase 웹 설정값이 비어 있습니다. NEXT_PUBLIC_FIREBASE_* 환경 변수를 먼저 설정해 주세요.");
+  }
+
+  return firestore;
 }
 
 function isSameFile(left: File, right: File) {
@@ -127,7 +135,9 @@ export async function syncExamRecordToCloud({
 
   onProgress?.(0.9, "기록 메타데이터 저장 중");
 
-  await setDoc(doc(firestore, "users", ownerUid, "examRecords", record.id), cloudRecord, {
+  const db = requireFirestore();
+
+  await setDoc(doc(db, "users", ownerUid, "examRecords", record.id), cloudRecord, {
     merge: true
   });
 
@@ -136,13 +146,14 @@ export async function syncExamRecordToCloud({
 }
 
 export async function updateCloudRecordSummary(ownerUid: string, record: StoredExamRecord, result: GradeResponsePayload) {
+  const db = requireFirestore();
   const detailUpload = await uploadDetailJson(ownerUid, {
     ...record,
     result
   });
 
   await setDoc(
-    doc(firestore, "users", ownerUid, "examRecords", record.id),
+    doc(db, "users", ownerUid, "examRecords", record.id),
     {
       updatedAt: new Date().toISOString(),
       detailJsonUrl: detailUpload.detailJsonUrl,
@@ -165,6 +176,7 @@ export async function fetchCloudRecordDetail(detailJsonUrl: string): Promise<Sto
 }
 
 export async function deleteCloudRecord(ownerUid: string, record: CloudExamRecord) {
+  const db = requireFirestore();
   const publicIds = [record.questionStoragePath, record.answerStoragePath, record.detailStoragePath].filter(
     (value): value is string => Boolean(value)
   );
@@ -179,10 +191,15 @@ export async function deleteCloudRecord(ownerUid: string, record: CloudExamRecor
     });
   }
 
-  await deleteDoc(doc(firestore, "users", ownerUid, "examRecords", record.id));
+  await deleteDoc(doc(db, "users", ownerUid, "examRecords", record.id));
 }
 
 export function subscribeToCloudRecords(ownerUid: string, callback: (records: CloudExamRecord[]) => void) {
+  if (!firebaseConfigured || !firestore) {
+    callback([]);
+    return () => undefined;
+  }
+
   const collectionRef = collection(firestore, "users", ownerUid, "examRecords");
   const recordsQuery = query(collectionRef, orderBy("createdAt", "desc"));
 
