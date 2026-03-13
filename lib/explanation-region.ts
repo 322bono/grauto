@@ -1,92 +1,194 @@
 import type { NormalizedRect, QuestionResult } from "@/lib/types";
 
+interface PageColumn {
+  id: "left" | "right" | "full";
+  x: number;
+  width: number;
+}
+
 export function resolveLocalExplanationRect(
   question: QuestionResult,
   pageQuestions: QuestionResult[]
 ): NormalizedRect | null {
-  const ordered = [...pageQuestions].sort(compareQuestionsOnPage);
-  const currentIndex = ordered.findIndex((item) => item.selectionId === question.selectionId);
+  const normalizedExplanation = normalizeRect(question.explanationRegion);
+  const layout = inferPageLayout(pageQuestions);
+  const currentColumn = resolveQuestionColumn(question, layout);
+  const currentTop = resolveExplanationTop(question);
+  const nextQuestion = findNextQuestionInColumn(question, pageQuestions, currentColumn, layout);
+  const nextAnchor = nextQuestion ? resolveQuestionTop(nextQuestion) - 0.02 : 0.965;
 
-  if (currentIndex === -1) {
-    return normalizeRect(question.explanationRegion);
+  let top = clamp(currentTop, 0.04, 0.92);
+  let bottom = Math.min(nextAnchor, normalizedExplanation ? normalizedExplanation.y + normalizedExplanation.height : 0.965);
+
+  if (!Number.isFinite(bottom) || bottom <= top + 0.08) {
+    bottom = nextQuestion ? Math.max(top + 0.1, nextAnchor) : Math.min(0.965, top + Math.max(normalizedExplanation?.height ?? 0.22, 0.2));
   }
 
-  const current = ordered[currentIndex];
-  const next = ordered[currentIndex + 1];
-  const guessedTop = getExplanationStart(current, currentIndex, ordered.length);
-  const guessedNextStart = next ? getQuestionAnchor(next, currentIndex + 1, ordered.length) : 0.965;
-
-  const top = clamp(guessedTop, 0.04, 0.9);
-
-  let bottom = Math.min(
-    current.explanationRegion ? current.explanationRegion.y + current.explanationRegion.height : 0.96,
-    guessedNextStart - 0.018
-  );
-
-  if (!Number.isFinite(bottom) || bottom <= top + 0.1) {
-    bottom = Math.min(0.965, top + Math.max(current.explanationRegion?.height ?? 0.22, 0.2));
-  }
-
-  const [x, width] = resolveHorizontalBounds(current);
+  const horizontal = resolveHorizontalBounds(question, currentColumn, layout);
 
   return normalizeRect({
-    x,
+    x: horizontal.x,
     y: top,
-    width,
-    height: clamp(bottom - top, 0.12, 0.92 - top)
+    width: horizontal.width,
+    height: clamp(bottom - top, 0.08, 0.96 - top)
   });
 }
 
-function compareQuestionsOnPage(left: QuestionResult, right: QuestionResult) {
-  const leftNumber = left.questionNumber ?? Number.MAX_SAFE_INTEGER;
-  const rightNumber = right.questionNumber ?? Number.MAX_SAFE_INTEGER;
+function inferPageLayout(pageQuestions: QuestionResult[]) {
+  const anchors = pageQuestions
+    .map((item) => resolveBaseBox(item))
+    .filter((box): box is NormalizedRect => Boolean(box))
+    .map((box) => ({
+      left: box.x,
+      right: box.x + box.width,
+      center: box.x + box.width / 2
+    }));
 
-  if (leftNumber !== rightNumber) {
-    return leftNumber - rightNumber;
+  if (anchors.length < 2) {
+    return {
+      isTwoColumn: false,
+      columns: [{ id: "full", x: 0.05, width: 0.9 } satisfies PageColumn]
+    };
   }
 
-  return getVisualTop(left) - getVisualTop(right);
-}
+  const leftCluster = anchors.filter((anchor) => anchor.center < 0.53);
+  const rightCluster = anchors.filter((anchor) => anchor.center >= 0.53);
+  const leftRightGap =
+    leftCluster.length > 0 && rightCluster.length > 0
+      ? Math.min(...rightCluster.map((item) => item.left)) - Math.max(...leftCluster.map((item) => item.right))
+      : -1;
+  const isTwoColumn = leftCluster.length > 0 && rightCluster.length > 0 && leftRightGap > 0.04;
 
-function getVisualTop(question: QuestionResult) {
-  return question.answerRegion?.y ?? question.explanationRegion?.y ?? 1;
-}
-
-function getQuestionAnchor(question: QuestionResult, index: number, total: number) {
-  if (question.answerRegion) {
-    return question.answerRegion.y;
+  if (!isTwoColumn) {
+    return {
+      isTwoColumn: false,
+      columns: [{ id: "full", x: 0.05, width: 0.9 } satisfies PageColumn]
+    };
   }
 
-  if (question.explanationRegion) {
-    return question.explanationRegion.y;
-  }
+  const leftStart = clamp(Math.min(...leftCluster.map((item) => item.left), 0.05), 0.03, 0.22);
+  const leftEnd = clamp(Math.max(...leftCluster.map((item) => item.right), 0.47), 0.38, 0.58);
+  const rightStart = clamp(Math.min(...rightCluster.map((item) => item.left), 0.52), 0.42, 0.72);
+  const rightEnd = clamp(Math.max(...rightCluster.map((item) => item.right), 0.95), 0.78, 0.98);
 
-  return 0.08 + (index / Math.max(total, 1)) * 0.84;
+  return {
+    isTwoColumn: true,
+    columns: [
+      { id: "left", x: leftStart, width: clamp(leftEnd - leftStart, 0.26, 0.5) },
+      { id: "right", x: rightStart, width: clamp(rightEnd - rightStart, 0.22, 0.5) }
+    ] satisfies PageColumn[]
+  };
 }
 
-function getExplanationStart(question: QuestionResult, index: number, total: number) {
-  const answerBottom = question.answerRegion ? question.answerRegion.y + question.answerRegion.height + 0.012 : null;
+function resolveQuestionColumn(
+  question: QuestionResult,
+  layout: ReturnType<typeof inferPageLayout>
+) {
+  if (!layout.isTwoColumn) {
+    return layout.columns[0];
+  }
 
-  if (question.explanationRegion) {
-    return Math.max(question.explanationRegion.y, answerBottom ?? 0);
+  const box = resolveBaseBox(question);
+  const center = box ? box.x + box.width / 2 : 0.5;
+
+  return center < 0.53 ? layout.columns[0] : layout.columns[1];
+}
+
+function findNextQuestionInColumn(
+  question: QuestionResult,
+  pageQuestions: QuestionResult[],
+  currentColumn: PageColumn,
+  layout: ReturnType<typeof inferPageLayout>
+) {
+  const currentTop = resolveQuestionTop(question);
+
+  return [...pageQuestions]
+    .filter((candidate) => candidate.selectionId !== question.selectionId)
+    .filter((candidate) => {
+      const candidateColumn = resolveQuestionColumn(candidate, layout);
+      return candidateColumn.id === currentColumn.id;
+    })
+    .filter((candidate) => resolveQuestionTop(candidate) > currentTop + 0.01)
+    .sort((left, right) => resolveQuestionTop(left) - resolveQuestionTop(right))[0];
+}
+
+function resolveHorizontalBounds(
+  question: QuestionResult,
+  column: PageColumn,
+  layout: ReturnType<typeof inferPageLayout>
+) {
+  const explanation = normalizeRect(question.explanationRegion);
+
+  if (!layout.isTwoColumn) {
+    if (!explanation) {
+      return {
+        x: column.x,
+        width: column.width
+      };
+    }
+
+    const left = clamp(Math.max(column.x, explanation.x - 0.01), column.x, column.x + 0.12);
+    const right = clamp(explanation.x + explanation.width + 0.02, left + 0.3, 0.97);
+
+    return {
+      x: left,
+      width: clamp(right - left, 0.38, 0.92)
+    };
+  }
+
+  if (!explanation) {
+    return {
+      x: column.x,
+      width: column.width
+    };
+  }
+
+  const left = clamp(Math.max(column.x, explanation.x - 0.01), column.x, column.x + 0.06);
+  const right = clamp(
+    Math.min(column.x + column.width, explanation.x + explanation.width + 0.02),
+    left + 0.18,
+    column.x + column.width
+  );
+
+  return {
+    x: left,
+    width: clamp(right - left, 0.18, column.width)
+  };
+}
+
+function resolveExplanationTop(question: QuestionResult) {
+  const explanation = normalizeRect(question.explanationRegion);
+  const answer = normalizeRect(question.answerRegion);
+  const answerBottom = answer ? answer.y + answer.height + 0.012 : null;
+
+  if (explanation) {
+    return Math.max(explanation.y, answerBottom ?? 0);
   }
 
   if (answerBottom !== null) {
     return answerBottom;
   }
 
-  return 0.14 + (index / Math.max(total, 1)) * 0.72;
+  return 0.14;
 }
 
-function resolveHorizontalBounds(question: QuestionResult): [number, number] {
-  if (!question.explanationRegion) {
-    return [0.05, 0.9];
+function resolveQuestionTop(question: QuestionResult) {
+  const answer = normalizeRect(question.answerRegion);
+  const explanation = normalizeRect(question.explanationRegion);
+
+  if (answer) {
+    return answer.y;
   }
 
-  const left = clamp(Math.min(question.explanationRegion.x, 0.08), 0.03, 0.18);
-  const right = clamp(Math.max(question.explanationRegion.x + question.explanationRegion.width, 0.9), 0.82, 0.97);
+  if (explanation) {
+    return Math.max(0.04, explanation.y - 0.06);
+  }
 
-  return [left, clamp(right - left, 0.72, 0.92)];
+  return 0.9;
+}
+
+function resolveBaseBox(question: QuestionResult) {
+  return normalizeRect(question.answerRegion) ?? normalizeRect(question.explanationRegion);
 }
 
 function normalizeRect(rect: NormalizedRect | null): NormalizedRect | null {
@@ -94,12 +196,12 @@ function normalizeRect(rect: NormalizedRect | null): NormalizedRect | null {
     return null;
   }
 
-  return {
-    x: clamp(rect.x, 0, 0.96),
-    y: clamp(rect.y, 0, 0.96),
-    width: clamp(rect.width, 0.04, 0.96),
-    height: clamp(rect.height, 0.04, 0.96)
-  };
+  const x = clamp(rect.x, 0, 0.96);
+  const y = clamp(rect.y, 0, 0.96);
+  const width = clamp(rect.width, 0.04, 1 - x);
+  const height = clamp(rect.height, 0.04, 1 - y);
+
+  return { x, y, width, height };
 }
 
 function clamp(value: number, min: number, max: number) {
