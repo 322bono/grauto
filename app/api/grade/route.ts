@@ -196,6 +196,7 @@ function buildUserParts(payload: GradeRequestPayload): GeminiPart[] {
         `question_index=${index + 1}`,
         `selection_id=${selection.id}`,
         `question_page=${selection.pageNumber}`,
+        `question_number_hint=${selection.questionNumberHint ?? "unknown"}`,
         `text_hint=${selection.extractedTextSnippet || "없음"}`,
         "answer_page_candidates:",
         candidateHints || "- 없음"
@@ -248,8 +249,11 @@ function normalizeQuestion(
 
   return {
     selectionId: selection.id,
-    questionNumber: Number.isFinite(raw?.question_number) ? raw.question_number : index + 1,
-    detectedHeaderText: toStringValue(raw?.detected_header_text, selection.extractedTextSnippet || `문제 페이지 ${selection.pageNumber}`),
+    questionNumber: Number.isFinite(raw?.question_number) ? raw.question_number : (selection.questionNumberHint ?? index + 1),
+    detectedHeaderText: toStringValue(
+      raw?.detected_header_text,
+      selection.extractedTextSnippet || `문제 ${selection.questionNumberHint ?? index + 1}`
+    ),
     questionType,
     studentAnswer: toStringValue(raw?.student_answer, ""),
     correctAnswer: toStringValue(raw?.correct_answer, ""),
@@ -287,8 +291,8 @@ function normalizeQuestion(
 function buildFallbackResponse(payload: GradeRequestPayload, reason: string): GradeResponsePayload {
   const questions: QuestionResult[] = payload.questionSelections.map((selection, index) => ({
     selectionId: selection.id,
-    questionNumber: index + 1,
-    detectedHeaderText: selection.extractedTextSnippet || `문제 페이지 ${selection.pageNumber}`,
+    questionNumber: selection.questionNumberHint ?? index + 1,
+    detectedHeaderText: selection.extractedTextSnippet || `문제 ${selection.questionNumberHint ?? index + 1}`,
     questionType: "short-answer",
     studentAnswer: "",
     correctAnswer: "",

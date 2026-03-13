@@ -28,6 +28,7 @@ export interface SelectedQuestionRegionPayload {
   bounds: NormalizedRect;
   snapshotDataUrl: string;
   extractedTextSnippet?: string;
+  questionNumberHint?: number | null;
 }
 
 export interface AnswerPagePayload {

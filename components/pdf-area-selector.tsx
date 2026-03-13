@@ -4,16 +4,22 @@ import { startTransition, useEffect, useMemo, useRef, useState } from "react";
 import { Document, Page } from "react-pdf";
 import { ensurePdfWorker } from "@/lib/pdf-worker";
 import type { AnswerPagePayload, SelectedQuestionRegionPayload } from "@/lib/types";
-import { canvasToCompressedDataUrl, clonePdfBytes, cropCanvasToDataUrl, extractPdfTextSnippets } from "@/lib/pdf-utils";
+import {
+  canvasToCompressedDataUrl,
+  clonePdfBytes,
+  cropCanvasToDataUrl,
+  detectQuestionBandsFromCanvas,
+  extractPdfQuestionRegions,
+  extractPdfTextSnippets
+} from "@/lib/pdf-utils";
 
 ensurePdfWorker();
 
-const QUESTION_PAGE_BOUNDS = {
-  x: 0.05,
-  y: 0.06,
-  width: 0.9,
-  height: 0.88
-} as const;
+interface DetectedQuestionSlice {
+  questionNumber: number | null;
+  bounds: SelectedQuestionRegionPayload["bounds"];
+  textSnippet: string;
+}
 
 interface PdfAreaSelectorProps {
   title: string;
@@ -43,6 +49,7 @@ export function PdfAreaSelector({
   const [documentData, setDocumentData] = useState<Uint8Array | null>(null);
   const [loadError, setLoadError] = useState("");
   const [textSnippets, setTextSnippets] = useState<Record<number, string>>({});
+  const [questionRegionsByPage, setQuestionRegionsByPage] = useState<Record<number, DetectedQuestionSlice[]>>({});
   const [selectedPages, setSelectedPages] = useState<number[]>([]);
 
   useEffect(() => {
@@ -64,6 +71,7 @@ export function PdfAreaSelector({
     setLoadError("");
     setSelectedPages([]);
     setTextSnippets({});
+    setQuestionRegionsByPage({});
     canvasRefs.current = {};
     pageHostRefs.current = {};
 
@@ -85,14 +93,19 @@ export function PdfAreaSelector({
           setDocumentData(clonePdfBytes(bytes));
 
           try {
-            const snippets = await extractPdfTextSnippets(bytes);
+            const [snippets, detectedRegions] = await Promise.all([
+              extractPdfTextSnippets(bytes),
+              selectionMode === "region" ? extractPdfQuestionRegions(bytes) : Promise.resolve({})
+            ]);
 
             if (!cancelled) {
               setTextSnippets(snippets);
+              setQuestionRegionsByPage(detectedRegions as Record<number, DetectedQuestionSlice[]>);
             }
           } catch {
             if (!cancelled) {
               setTextSnippets({});
+              setQuestionRegionsByPage({});
             }
           }
         })
@@ -110,7 +123,16 @@ export function PdfAreaSelector({
     return () => {
       cancelled = true;
     };
-  }, [file]);
+  }, [file, selectionMode]);
+
+  const selectedQuestionCount = useMemo(
+    () =>
+      selectedPages.reduce((count, pageNumber) => {
+        const detectedCount = questionRegionsByPage[pageNumber]?.length ?? 0;
+        return count + Math.max(1, detectedCount);
+      }, 0),
+    [questionRegionsByPage, selectedPages]
+  );
 
   useEffect(() => {
     if (selectionMode !== "region" || !onRegionsChange) {
@@ -119,32 +141,49 @@ export function PdfAreaSelector({
 
     const nextRegions = [...selectedPages]
       .sort((a, b) => a - b)
-      .flatMap((pageNumber, index) => {
+      .flatMap((pageNumber) => {
         const canvas = canvasRefs.current[pageNumber];
 
         if (!canvas) {
           return [];
         }
 
-        const snapshotDataUrl = cropCanvasToDataUrl(canvas, QUESTION_PAGE_BOUNDS);
-        if (!snapshotDataUrl) {
-          return [];
-        }
+        const regionSlices =
+          questionRegionsByPage[pageNumber]?.length > 0
+            ? questionRegionsByPage[pageNumber]
+            : detectQuestionBandsFromCanvas(canvas).map((bounds, index) => ({
+                questionNumber: null,
+                bounds,
+                textSnippet: textSnippets[pageNumber] ? `${textSnippets[pageNumber]} #${index + 1}` : ""
+              }));
 
-        return [
-          {
-            id: `question-page-${pageNumber}`,
-            pageNumber,
-            displayOrder: index + 1,
-            bounds: QUESTION_PAGE_BOUNDS,
-            snapshotDataUrl,
-            extractedTextSnippet: textSnippets[pageNumber] ?? ""
+        return regionSlices.flatMap((region, regionIndex) => {
+          const snapshotDataUrl = cropCanvasToDataUrl(canvas, region.bounds);
+
+          if (!snapshotDataUrl) {
+            return [];
           }
-        ];
-      });
+
+          return [
+            {
+              id: `question-page-${pageNumber}-${region.questionNumber ?? regionIndex + 1}-${regionIndex}`,
+              pageNumber,
+              displayOrder: 0,
+              bounds: region.bounds,
+              snapshotDataUrl,
+              extractedTextSnippet: region.textSnippet || textSnippets[pageNumber] || "",
+              questionNumberHint: region.questionNumber
+            }
+          ];
+        });
+      })
+      .map((region, index) => ({
+        ...region,
+        displayOrder: index + 1
+      }));
 
     onRegionsChange(nextRegions);
-  }, [onRegionsChange, selectedPages, selectionMode, textSnippets]);
+  }, [onRegionsChange, questionRegionsByPage, selectedPages, selectionMode, textSnippets]);
 
   useEffect(() => {
     if (selectionMode !== "page" || !onPagesChange) {
@@ -250,11 +289,11 @@ export function PdfAreaSelector({
           <div className="selector-toolbar">
             <div className="button-row">
               <span className="status ok">
-                {selectionMode === "region" ? `선택한 문제 페이지 ${selectedPages.length}개` : `선택한 답안 페이지 ${selectedPages.length}개`}
+                {selectionMode === "region" ? `선택된 문제 문항 ${selectedQuestionCount}개` : `선택한 답안 페이지 ${selectedPages.length}개`}
               </span>
               <span className="subtle">
                 {selectionMode === "region"
-                  ? "페이지를 누르면 여백을 제외한 문제 부분만 자동으로 사용합니다."
+                  ? "페이지를 누르면 그 안의 문항을 자동으로 잘라서 사용합니다."
                   : "정답과 해설이 있는 페이지를 눌러 빠르게 골라 주세요."}
               </span>
             </div>
@@ -282,17 +321,13 @@ export function PdfAreaSelector({
             onLoadError={(error) => {
               setNumPages(0);
               setLoadError(
-                error instanceof Error
-                  ? `PDF를 불러오지 못했습니다. ${error.message}`
-                  : "PDF를 불러오지 못했습니다. 다른 PDF로 다시 시도해 주세요."
+                error instanceof Error ? `PDF를 불러오지 못했습니다. ${error.message}` : "PDF를 불러오지 못했습니다."
               );
             }}
             onSourceError={(error) => {
               setNumPages(0);
               setLoadError(
-                error instanceof Error
-                  ? `PDF 원본을 읽지 못했습니다. ${error.message}`
-                  : "PDF 원본을 읽지 못했습니다. 다시 업로드해 주세요."
+                error instanceof Error ? `PDF 원본을 읽지 못했습니다. ${error.message}` : "PDF 원본을 읽지 못했습니다."
               );
             }}
           >
@@ -300,6 +335,7 @@ export function PdfAreaSelector({
               {Array.from({ length: numPages }, (_, index) => {
                 const pageNumber = index + 1;
                 const isSelectedPage = selectedPages.includes(pageNumber);
+                const detectedQuestionCount = questionRegionsByPage[pageNumber]?.length ?? 0;
 
                 return (
                   <button
@@ -311,13 +347,7 @@ export function PdfAreaSelector({
                     <div className="page-header">
                       <strong>{pageNumber}페이지</strong>
                       <span className={`status ${isSelectedPage ? "ok" : "warn"}`}>
-                        {selectionMode === "region"
-                          ? isSelectedPage
-                            ? "문제"
-                            : "선택"
-                          : isSelectedPage
-                            ? "답안"
-                            : "선택"}
+                        {selectionMode === "region" ? (isSelectedPage ? "문제" : "선택") : isSelectedPage ? "답안" : "선택"}
                       </span>
                     </div>
 
@@ -339,10 +369,13 @@ export function PdfAreaSelector({
 
                     <div className="page-card-footer">
                       <span className="subtle line-clamp-2">
-                        {textSnippets[pageNumber]
-                          ? textSnippets[pageNumber]
-                          : "텍스트가 적은 스캔 PDF면 썸네일 이미지를 보고 선택해 주세요."}
+                        {textSnippets[pageNumber] ? textSnippets[pageNumber] : "텍스트가 적은 스캔 PDF면 썸네일을 보고 선택해 주세요."}
                       </span>
+                      {selectionMode === "region" ? (
+                        <span className="subtle" style={{ display: "block", marginTop: 8 }}>
+                          감지 문항 {detectedQuestionCount > 0 ? detectedQuestionCount : "자동 분리 준비 중"}
+                        </span>
+                      ) : null}
                     </div>
                   </button>
                 );

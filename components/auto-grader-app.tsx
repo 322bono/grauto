@@ -623,14 +623,14 @@ export function AutoGraderApp() {
               <div className="step-panel stack">
                 <PdfAreaSelector
                   title="문제 영역 선택"
-                  helperText="문제가 들어 있는 페이지를 쭉 확인한 뒤, 채점에 사용할 문제 페이지를 클릭해서 선택해 주세요."
+                  helperText="문제가 들어 있는 페이지를 고르면, 그 안의 문항을 자동으로 잘라서 채점용으로 사용합니다."
                   file={questionFile}
                   selectionMode="region"
                   accentLabel="문제 선택"
                   onRegionsChange={setQuestionSelections}
                 />
                 <div className="card pad step-actions">
-                  <div className="subtle">현재 선택한 문제 페이지: {selectionSummary.questionCount}개</div>
+                  <div className="subtle">현재 선택한 문제 문항: {selectionSummary.questionCount}개</div>
                   <div className="button-row">
                     <button type="button" className="cta ghost" onClick={moveToPreviousStep}>
                       이전
