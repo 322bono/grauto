@@ -115,42 +115,39 @@ const GRADE_RESPONSE_SCHEMA = {
 } as const;
 
 const SYSTEM_PROMPT = `
-당신은 시험지 자동 채점 보조 시스템입니다.
-이번 호출에서는 기본 채점만 수행합니다.
+You grade scanned exam pages.
+Return JSON only.
 
-목표:
-1. 문제 영역과 답안 페이지를 정확하게 매칭합니다.
-2. 학생의 답이 정답 리스트에 있는지 확인하고 is_correct를 true 또는 false로만 판단합니다.
-3. 현재 화면에 남아 있는 풀이와 최종 표기만 보고 authenticity를 solved / guessed / blank / unclear 중 하나로 고릅니다.
-4. 지운 흔적, 덧칠, 수정 흔적은 최종 풀이로 명확할 때만 참고하고, 애매하면 무시합니다.
-5. 해설 영역과 정답 영역의 대략적인 박스를 찾습니다.
-6. feedback은 아주 짧게만 작성합니다.
+Goals:
+1. Match each question image to the most likely answer/explanation page.
+2. Judge correctness only by whether the student's final answer is in the answer list.
+3. Classify visible work as solved / guessed / blank / unclear.
+4. Ignore erased marks or ambiguous overwritten traces.
+5. Return tight normalized boxes for the answer region and explanation region.
+6. Keep feedback short.
 
-중요 제약:
-- 반드시 JSON만 반환합니다.
-- 보이지 않는 보기, 기호, 문장, 조건을 추측하지 않습니다.
-- selection_id 순서대로 questions 배열을 채웁니다.
-- 정오 판단의 핵심은 "학생 답이 정답 리스트에 포함되는지 여부"입니다.
-- feedback.mistake_reason은 1문장 이내로 작성합니다.
-- feedback.explanation은 2문장 이내로 작성합니다.
-- feedback.recommended_review는 1문장 이내로 작성합니다.
-- feedback.concept_tags는 최대 3개까지만 넣습니다.
-- 확신이 낮으면 review_required를 true로 둡니다.
-- answer_region과 explanation_region은 0~1 정규화 좌표로 반환합니다.
+Rules:
+- Do not invent symbols, choices, or text you cannot see.
+- Keep question order aligned to selection_id order.
+- mistake_reason: 1 sentence max.
+- explanation: 2 sentences max.
+- recommended_review: 1 sentence max.
+- concept_tags: max 3.
+- Set review_required=true when confidence is low.
 `;
 
 export async function POST(request: Request) {
   const payload = (await request.json()) as GradeRequestPayload;
 
   if (!payload.questionSelections?.length || !payload.answerPages?.length) {
-    return new NextResponse("문제 영역과 답안 페이지를 먼저 선택해 주세요.", { status: 400 });
+    return new NextResponse("문제 페이지와 답안 페이지를 먼저 선택해 주세요.", { status: 400 });
   }
 
   const apiKey = process.env.GEMINI_API_KEY;
   const model = process.env.GEMINI_MODEL ?? "gemini-2.5-flash";
 
   if (!apiKey) {
-    return NextResponse.json(buildFallbackResponse(payload, "GEMINI_API_KEY가 없어 데모 결과를 반환했습니다."));
+    return NextResponse.json(buildFallbackResponse(payload, "GEMINI_API_KEY가 없어 데모 결과를 반환합니다."));
   }
 
   try {
@@ -181,8 +178,7 @@ function buildUserParts(payload: GradeRequestPayload): GeminiPart[] {
         `풀이 시간: ${payload.metadata.durationMinutes ?? "미입력"}분`,
         `시험 날짜: ${payload.metadata.takenAt}`,
         "",
-        "선택된 문제별로 가장 가능성 높은 답안 페이지 후보를 비교해 기본 채점만 수행해 주세요.",
-        "오답 원인 설명은 길게 쓰지 말고 정오 판단과 짧은 메모만 남겨 주세요."
+        "문제별로 가장 가능성 높은 답안 후보 페이지를 비교해서 기본 채점만 진행해 주세요."
       ].join("\n")
     }
   ];
@@ -201,20 +197,16 @@ function buildUserParts(payload: GradeRequestPayload): GeminiPart[] {
         `selection_id=${selection.id}`,
         `question_page=${selection.pageNumber}`,
         `text_hint=${selection.extractedTextSnippet || "없음"}`,
-        "답안 후보 페이지:",
+        "answer_page_candidates:",
         candidateHints || "- 없음"
       ].join("\n")
     });
 
     parts.push(imagePartFromDataUrl(selection.snapshotDataUrl));
-    parts.push({
-      text: `문제 전체 페이지 참고 이미지 (selection_id=${selection.id})`
-    });
-    parts.push(imagePartFromDataUrl(selection.pageImageDataUrl));
 
     candidatePages.forEach((page, candidateIndex) => {
       parts.push({
-        text: `답안 후보 page=${page.pageNumber}, text_hint=${page.extractedTextSnippet || "없음"}, primary_candidate=${candidateIndex === 0}`
+        text: `answer_candidate page=${page.pageNumber}, text_hint=${page.extractedTextSnippet || "없음"}, primary_candidate=${candidateIndex === 0}`
       });
       parts.push(imagePartFromDataUrl(page.pageImageDataUrl));
     });
@@ -269,7 +261,7 @@ function normalizeQuestion(
     matchedAnswerPageNumber: answerPageNumber,
     matchedAnswerReason: toStringValue(
       raw?.matched_answer_reason,
-      "페이지 번호, 상단 제목, 문항 배열을 함께 비교해 가장 가까운 답안 페이지로 매칭했습니다."
+      "페이지 번호, 상단 텍스트, 문항 단서를 바탕으로 가장 가까운 답안 페이지로 매칭했습니다."
     ),
     answerRegion: normalizeBox(raw?.answer_region),
     explanationRegion: normalizeBox(raw?.explanation_region),
@@ -283,7 +275,7 @@ function normalizeQuestion(
     },
     feedback: {
       mistakeReason: toStringValue(raw?.feedback?.mistake_reason, "답안을 다시 한 번 확인해 주세요."),
-      explanation: toStringValue(raw?.feedback?.explanation, "답지 해설 이미지를 함께 보며 다시 확인해 보세요."),
+      explanation: toStringValue(raw?.feedback?.explanation, "답지 해설 이미지를 함께 보고 다시 확인해 보세요."),
       recommendedReview: toStringValue(raw?.feedback?.recommended_review, "같은 유형 문제를 1~2문항 더 풀어보는 것을 추천합니다."),
       conceptTags: Array.isArray(raw?.feedback?.concept_tags)
         ? raw.feedback.concept_tags.filter((item: unknown) => typeof item === "string").slice(0, 3)
@@ -306,19 +298,19 @@ function buildFallbackResponse(payload: GradeRequestPayload, reason: string): Gr
     confidence: 0.18,
     reviewRequired: true,
     matchedAnswerPageNumber: payload.answerPages[index]?.pageNumber ?? payload.answerPages[0]?.pageNumber ?? null,
-    matchedAnswerReason: "실제 채점 호출이 실패해 첫 번째 후보 페이지를 임시로 매칭했습니다.",
+    matchedAnswerReason: "실제 채점 호출에 실패해 첫 번째 답안 후보 페이지를 임시로 연결했습니다.",
     answerRegion: { x: 0.08, y: 0.08, width: 0.34, height: 0.12 },
     explanationRegion: { x: 0.06, y: 0.16, width: 0.88, height: 0.72 },
     workEvidence: {
       authenticity: "unclear",
-      rationale: "현재는 자동 풀이 흔적 판정이 비활성화되어 있습니다.",
+      rationale: "현재는 자동 풀이 흔적 판정이 완료되지 않았습니다.",
       extractedWork: "",
       detectedMarks: []
     },
     feedback: {
-      mistakeReason: "실제 정오 판정을 완료하지 못했습니다.",
-      explanation: `환경 설정이 완전하지 않아 데모 결과를 반환했습니다. 현재 메시지: ${reason}`,
-      recommendedReview: "환경 변수를 확인한 뒤 다시 채점해 주세요.",
+      mistakeReason: "실제 정오 판정이 완료되지 않았습니다.",
+      explanation: `환경 설정 또는 요청 크기 문제로 데모 결과를 반환했습니다. 현재 메시지: ${reason}`,
+      recommendedReview: "설정을 확인한 뒤 다시 채점해 주세요.",
       conceptTags: ["설정 확인 필요"]
     }
   }));
@@ -357,7 +349,7 @@ function toNumber(value: unknown, fallback: number) {
 }
 
 function toStringValue(value: unknown, fallback: string) {
-  return typeof value === "string" && value.trim().length > 0 ? value : fallback;
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : fallback;
 }
 
 function clamp(value: number, min: number, max: number) {

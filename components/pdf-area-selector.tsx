@@ -4,7 +4,7 @@ import { startTransition, useEffect, useMemo, useRef, useState } from "react";
 import { Document, Page } from "react-pdf";
 import { ensurePdfWorker } from "@/lib/pdf-worker";
 import type { AnswerPagePayload, SelectedQuestionRegionPayload } from "@/lib/types";
-import { clonePdfBytes, cropCanvasToDataUrl, extractPdfTextSnippets } from "@/lib/pdf-utils";
+import { canvasToCompressedDataUrl, clonePdfBytes, cropCanvasToDataUrl, extractPdfTextSnippets } from "@/lib/pdf-utils";
 
 ensurePdfWorker();
 
@@ -127,9 +127,7 @@ export function PdfAreaSelector({
         }
 
         const snapshotDataUrl = cropCanvasToDataUrl(canvas, QUESTION_PAGE_BOUNDS);
-        const pageImageDataUrl = canvas.toDataURL("image/png");
-
-        if (!snapshotDataUrl || !pageImageDataUrl) {
+        if (!snapshotDataUrl) {
           return [];
         }
 
@@ -140,7 +138,6 @@ export function PdfAreaSelector({
             displayOrder: index + 1,
             bounds: QUESTION_PAGE_BOUNDS,
             snapshotDataUrl,
-            pageImageDataUrl,
             extractedTextSnippet: textSnippets[pageNumber] ?? ""
           }
         ];
@@ -163,11 +160,21 @@ export function PdfAreaSelector({
           return [];
         }
 
+        const pageImageDataUrl = canvasToCompressedDataUrl(canvas, {
+          maxWidth: 176,
+          mimeType: "image/jpeg",
+          quality: 0.72
+        });
+
+        if (!pageImageDataUrl) {
+          return [];
+        }
+
         return [
           {
             id: `answer-${pageNumber}`,
             pageNumber,
-            pageImageDataUrl: canvas.toDataURL("image/png"),
+            pageImageDataUrl,
             extractedTextSnippet: textSnippets[pageNumber] ?? ""
           }
         ];

@@ -82,7 +82,36 @@ export function cropCanvasToDataUrl(sourceCanvas: HTMLCanvasElement, rect: Norma
   }
 
   context.drawImage(sourceCanvas, cropX, cropY, cropWidth, cropHeight, 0, 0, cropWidth, cropHeight);
-  return canvas.toDataURL("image/png");
+  return canvas.toDataURL("image/jpeg", 0.82);
+}
+
+export function canvasToCompressedDataUrl(
+  sourceCanvas: HTMLCanvasElement,
+  options?: {
+    maxWidth?: number;
+    mimeType?: "image/jpeg" | "image/png";
+    quality?: number;
+  }
+) {
+  const maxWidth = options?.maxWidth ?? sourceCanvas.width;
+  const mimeType = options?.mimeType ?? "image/jpeg";
+  const quality = options?.quality ?? 0.74;
+  const scale = Math.min(1, maxWidth / Math.max(1, sourceCanvas.width));
+  const targetWidth = Math.max(24, Math.round(sourceCanvas.width * scale));
+  const targetHeight = Math.max(24, Math.round(sourceCanvas.height * scale));
+
+  const canvas = document.createElement("canvas");
+  canvas.width = targetWidth;
+  canvas.height = targetHeight;
+
+  const context = canvas.getContext("2d");
+
+  if (!context) {
+    return "";
+  }
+
+  context.drawImage(sourceCanvas, 0, 0, sourceCanvas.width, sourceCanvas.height, 0, 0, targetWidth, targetHeight);
+  return mimeType === "image/png" ? canvas.toDataURL(mimeType) : canvas.toDataURL(mimeType, quality);
 }
 
 export function renderCropStyle(rect: NormalizedRect) {

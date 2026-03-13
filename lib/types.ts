@@ -27,7 +27,6 @@ export interface SelectedQuestionRegionPayload {
   displayOrder: number;
   bounds: NormalizedRect;
   snapshotDataUrl: string;
-  pageImageDataUrl: string;
   extractedTextSnippet?: string;
 }
 

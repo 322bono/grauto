@@ -190,6 +190,14 @@ export function AutoGraderApp() {
       questionSelections,
       answerPages
     };
+    const requestBody = JSON.stringify(payload);
+    const payloadBytes = new TextEncoder().encode(requestBody).length;
+
+    if (payloadBytes > 3_800_000) {
+      setIsSubmitting(false);
+      window.alert("선택한 페이지가 너무 많아서 한 번에 채점 요청을 보낼 수 없습니다. 답안 페이지를 필요한 범위로 조금만 줄여 주세요.");
+      return;
+    }
 
     try {
       const response = await fetch("/api/grade", {
@@ -197,7 +205,7 @@ export function AutoGraderApp() {
         headers: {
           "Content-Type": "application/json"
         },
-        body: JSON.stringify(payload)
+        body: requestBody
       });
 
       if (!response.ok) {

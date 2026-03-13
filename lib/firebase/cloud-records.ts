@@ -1,6 +1,6 @@
 "use client";
 
-import { deleteDoc, collection, doc, onSnapshot, orderBy, query, setDoc } from "firebase/firestore";
+import { collection, deleteDoc, doc, onSnapshot, orderBy, query, setDoc } from "firebase/firestore";
 import { firebaseConfigured, firestore } from "@/lib/firebase/client";
 import type { CloudExamRecord, GradeResponsePayload, StoredExamRecord } from "@/lib/types";
 
@@ -26,9 +26,28 @@ interface DetailUploadResponse {
   detailStoragePath: string;
 }
 
+interface SignedUploadResponse {
+  cloudName: string;
+  apiKey: string;
+  timestamp: number;
+  signature: string;
+  publicId: string;
+  params: {
+    public_id: string;
+    timestamp: number;
+    overwrite: string;
+    invalidate: string;
+    use_filename: string;
+    unique_filename: string;
+    filename_override: string;
+    tags: string;
+    context: string;
+  };
+}
+
 function requireFirestore() {
   if (!firebaseConfigured || !firestore) {
-    throw new Error("Firebase 웹 설정값이 비어 있습니다. NEXT_PUBLIC_FIREBASE_* 환경 변수를 먼저 설정해 주세요.");
+    throw new Error("Firebase 설정이 비어 있습니다.");
   }
 
   return firestore;
@@ -43,6 +62,71 @@ async function readTextError(response: Response, fallback: string) {
   return text.trim() || fallback;
 }
 
+async function requestSignedUpload(
+  ownerUid: string,
+  recordId: string,
+  kind: "question" | "answer" | "detail",
+  fileName: string
+) {
+  const response = await fetch("/api/cloud-files/sign", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      ownerUid,
+      recordId,
+      kind,
+      fileName
+    })
+  });
+
+  if (!response.ok) {
+    throw new Error(await readTextError(response, "클라우드 업로드 서명을 만들지 못했습니다."));
+  }
+
+  return (await response.json()) as SignedUploadResponse;
+}
+
+async function uploadRawDirect(file: File | Blob, fileName: string, signed: SignedUploadResponse) {
+  const formData = new FormData();
+  formData.set("file", file, fileName);
+  formData.set("api_key", signed.apiKey);
+  formData.set("timestamp", String(signed.timestamp));
+  formData.set("signature", signed.signature);
+  formData.set("public_id", signed.params.public_id);
+  formData.set("overwrite", signed.params.overwrite);
+  formData.set("invalidate", signed.params.invalidate);
+  formData.set("use_filename", signed.params.use_filename);
+  formData.set("unique_filename", signed.params.unique_filename);
+  formData.set("filename_override", signed.params.filename_override);
+  formData.set("tags", signed.params.tags);
+  formData.set("context", signed.params.context);
+
+  const response = await fetch(`https://api.cloudinary.com/v1_1/${signed.cloudName}/raw/upload`, {
+    method: "POST",
+    body: formData
+  });
+
+  if (!response.ok) {
+    throw new Error(await readTextError(response, "Cloudinary 업로드에 실패했습니다."));
+  }
+
+  const uploaded = (await response.json()) as {
+    secure_url?: string;
+    public_id?: string;
+  };
+
+  if (!uploaded.secure_url || !uploaded.public_id) {
+    throw new Error("Cloudinary 업로드 결과가 비어 있습니다.");
+  }
+
+  return {
+    url: uploaded.secure_url,
+    publicId: uploaded.public_id
+  };
+}
+
 async function uploadCloudAssets({
   ownerUid,
   record,
@@ -50,52 +134,58 @@ async function uploadCloudAssets({
   answerFile,
   onProgress
 }: SyncExamRecordInput): Promise<CloudUploadResponse> {
-  const formData = new FormData();
   const reuseQuestionAsAnswer = record.uploadMode !== "split" && isSameFile(questionFile, answerFile);
+  const recordJson = JSON.stringify({ ...record, cloudSync: undefined });
 
-  formData.set("ownerUid", ownerUid);
-  formData.set("recordId", record.id);
-  formData.set("recordJson", JSON.stringify({ ...record, cloudSync: undefined }));
-  formData.set("reuseQuestionAsAnswer", String(reuseQuestionAsAnswer));
-  formData.set("questionFile", questionFile, questionFile.name);
+  onProgress?.(0.12, "업로드 준비 중");
 
-  if (!reuseQuestionAsAnswer) {
-    formData.set("answerFile", answerFile, answerFile.name);
-  }
+  const questionUpload = await uploadRawDirect(
+    questionFile,
+    questionFile.name || "question.pdf",
+    await requestSignedUpload(ownerUid, record.id, "question", questionFile.name || "question.pdf")
+  );
 
-  onProgress?.(0.12, "클라우드 업로드 준비 중");
+  onProgress?.(0.4, "문제 PDF 업로드 완료");
 
-  const response = await fetch("/api/cloud-files/sync", {
-    method: "POST",
-    body: formData
-  });
+  const answerUpload = reuseQuestionAsAnswer
+    ? questionUpload
+    : await uploadRawDirect(
+        answerFile,
+        answerFile.name || "answer.pdf",
+        await requestSignedUpload(ownerUid, record.id, "answer", answerFile.name || "answer.pdf")
+      );
 
-  if (!response.ok) {
-    throw new Error(await readTextError(response, "클라우드 업로드에 실패했습니다."));
-  }
+  onProgress?.(0.68, "답안 PDF 업로드 완료");
 
-  onProgress?.(0.78, "파일 업로드 완료");
-  return (await response.json()) as CloudUploadResponse;
+  const detailUpload = await uploadRawDirect(
+    new Blob([recordJson], { type: "application/json" }),
+    "record.json",
+    await requestSignedUpload(ownerUid, record.id, "detail", "record.json")
+  );
+
+  onProgress?.(0.9, "채점 결과 업로드 완료");
+
+  return {
+    questionPdfUrl: questionUpload.url,
+    questionStoragePath: questionUpload.publicId,
+    answerPdfUrl: answerUpload.url,
+    answerStoragePath: answerUpload.publicId,
+    detailJsonUrl: detailUpload.url,
+    detailStoragePath: detailUpload.publicId
+  };
 }
 
 async function uploadDetailJson(ownerUid: string, record: StoredExamRecord): Promise<DetailUploadResponse> {
-  const response = await fetch("/api/cloud-files/detail", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      ownerUid,
-      recordId: record.id,
-      recordJson: JSON.stringify({ ...record, cloudSync: undefined })
-    })
-  });
+  const detailUpload = await uploadRawDirect(
+    new Blob([JSON.stringify({ ...record, cloudSync: undefined })], { type: "application/json" }),
+    "record.json",
+    await requestSignedUpload(ownerUid, record.id, "detail", "record.json")
+  );
 
-  if (!response.ok) {
-    throw new Error(await readTextError(response, "상세 결과 업로드에 실패했습니다."));
-  }
-
-  return (await response.json()) as DetailUploadResponse;
+  return {
+    detailJsonUrl: detailUpload.url,
+    detailStoragePath: detailUpload.publicId
+  };
 }
 
 export async function syncExamRecordToCloud({
@@ -133,10 +223,9 @@ export async function syncExamRecordToCloud({
     resultMode: record.result.mode
   };
 
-  onProgress?.(0.9, "기록 메타데이터 저장 중");
+  onProgress?.(0.96, "기록 저장 중");
 
   const db = requireFirestore();
-
   await setDoc(doc(db, "users", ownerUid, "examRecords", record.id), cloudRecord, {
     merge: true
   });

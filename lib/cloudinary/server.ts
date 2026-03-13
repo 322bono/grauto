@@ -131,3 +131,34 @@ export async function deleteRawAsset(publicId: string) {
 
   return result;
 }
+
+export function buildSignedRawUpload(input: {
+  ownerUid: string;
+  recordId: string;
+  kind: "question" | "answer" | "detail";
+  fileName: string;
+}) {
+  const client = ensureCloudinary();
+  const timestamp = Math.floor(Date.now() / 1000);
+  const publicId = toPublicId(input.ownerUid, input.recordId, input.kind, input.fileName);
+  const params = {
+    public_id: publicId,
+    timestamp,
+    overwrite: "true",
+    invalidate: "true",
+    use_filename: "false",
+    unique_filename: "false",
+    filename_override: input.fileName,
+    tags: `grauto,${input.kind}`,
+    context: `owner_uid=${input.ownerUid}|record_id=${input.recordId}`
+  };
+
+  return {
+    cloudName: client.config().cloud_name as string,
+    apiKey: client.config().api_key as string,
+    timestamp,
+    signature: cloudinary.utils.api_sign_request(params, client.config().api_secret as string),
+    publicId,
+    params
+  };
+}
