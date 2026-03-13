@@ -39,7 +39,7 @@ export function PdfAreaSelector({
   const canvasRefs = useRef<Record<number, HTMLCanvasElement | null>>({});
 
   const [numPages, setNumPages] = useState(0);
-  const [viewportWidth, setViewportWidth] = useState(680);
+  const [containerWidth, setContainerWidth] = useState(680);
   const [documentData, setDocumentData] = useState<Uint8Array | null>(null);
   const [loadError, setLoadError] = useState("");
   const [textSnippets, setTextSnippets] = useState<Record<number, string>>({});
@@ -51,7 +51,7 @@ export function PdfAreaSelector({
     }
 
     const observer = new ResizeObserver(([entry]) => {
-      setViewportWidth(Math.max(320, Math.min(760, entry.contentRect.width - 12)));
+      setContainerWidth(Math.max(320, Math.min(1200, entry.contentRect.width - 12)));
     });
 
     observer.observe(wrapperRef.current);
@@ -184,10 +184,34 @@ export function PdfAreaSelector({
     return { data: documentData };
   }, [documentData]);
 
+  const thumbnailWidth = useMemo(() => {
+    if (containerWidth >= 980) {
+      return 210;
+    }
+
+    if (containerWidth >= 720) {
+      return 190;
+    }
+
+    if (containerWidth >= 480) {
+      return 160;
+    }
+
+    return 132;
+  }, [containerWidth]);
+
   function togglePage(pageNumber: number) {
     setSelectedPages((current) =>
       current.includes(pageNumber) ? current.filter((value) => value !== pageNumber) : [...current, pageNumber].sort((a, b) => a - b)
     );
+  }
+
+  function selectAllPages() {
+    setSelectedPages(Array.from({ length: numPages }, (_, index) => index + 1));
+  }
+
+  function clearSelection() {
+    setSelectedPages([]);
   }
 
   function registerCanvas(pageNumber: number) {
@@ -216,15 +240,26 @@ export function PdfAreaSelector({
         <div className="empty">{loadError}</div>
       ) : (
         <>
-          <div className="button-row">
-            <span className="status ok">
-              {selectionMode === "region" ? `선택한 문제 페이지 ${selectedPages.length}개` : `선택한 답안 페이지 ${selectedPages.length}개`}
-            </span>
-            <span className="subtle">
-              {selectionMode === "region"
-                ? "페이지를 누르면 여백을 제외한 문제 부분만 자동으로 사용합니다."
-                : "정답과 해설이 들어 있는 페이지를 눌러 선택해 주세요."}
-            </span>
+          <div className="selector-toolbar">
+            <div className="button-row">
+              <span className="status ok">
+                {selectionMode === "region" ? `선택한 문제 페이지 ${selectedPages.length}개` : `선택한 답안 페이지 ${selectedPages.length}개`}
+              </span>
+              <span className="subtle">
+                {selectionMode === "region"
+                  ? "페이지를 누르면 여백을 제외한 문제 부분만 자동으로 사용합니다."
+                  : "정답과 해설이 있는 페이지를 눌러 빠르게 골라 주세요."}
+              </span>
+            </div>
+
+            <div className="button-row">
+              <button type="button" className="cta ghost compact" onClick={selectAllPages} disabled={numPages === 0}>
+                전체 선택
+              </button>
+              <button type="button" className="cta ghost compact" onClick={clearSelection} disabled={selectedPages.length === 0}>
+                전체 해제
+              </button>
+            </div>
           </div>
 
           <Document
@@ -254,54 +289,55 @@ export function PdfAreaSelector({
               );
             }}
           >
-            <div className="stack">
+            <div className="pdf-thumb-grid">
               {Array.from({ length: numPages }, (_, index) => {
                 const pageNumber = index + 1;
                 const isSelectedPage = selectedPages.includes(pageNumber);
 
                 return (
-                  <div className={`page-card ${isSelectedPage ? "active" : ""}`} key={pageNumber}>
+                  <button
+                    key={pageNumber}
+                    type="button"
+                    className={`page-card page-card-button ${isSelectedPage ? "active" : ""}`}
+                    onClick={() => togglePage(pageNumber)}
+                  >
                     <div className="page-header">
-                      <div>
-                        <strong>{pageNumber}페이지</strong>
-                        <div className="subtle">
-                          {textSnippets[pageNumber]
-                            ? textSnippets[pageNumber]
-                            : "텍스트가 거의 없는 스캔 PDF라면 이미지 미리보기를 보고 선택해 주세요."}
-                        </div>
-                      </div>
-
-                      <button
-                        type="button"
-                        className={`toggle-card ${isSelectedPage ? "active" : ""}`}
-                        onClick={() => togglePage(pageNumber)}
-                      >
+                      <strong>{pageNumber}페이지</strong>
+                      <span className={`status ${isSelectedPage ? "ok" : "warn"}`}>
                         {selectionMode === "region"
                           ? isSelectedPage
-                            ? "문제로 선택됨"
-                            : "이 페이지를 문제로 사용"
+                            ? "문제"
+                            : "선택"
                           : isSelectedPage
-                            ? "답안으로 선택됨"
-                            : "이 페이지를 답안으로 사용"}
-                      </button>
+                            ? "답안"
+                            : "선택"}
+                      </span>
                     </div>
 
                     <div
-                      className="pdf-stage"
+                      className="pdf-stage compact"
                       ref={(node) => {
                         pageHostRefs.current[pageNumber] = node;
                       }}
                     >
                       <Page
                         pageNumber={pageNumber}
-                        width={viewportWidth}
+                        width={thumbnailWidth}
                         renderAnnotationLayer={false}
                         renderTextLayer={false}
-                        loading={<div className="empty">페이지를 그리는 중입니다.</div>}
+                        loading={<div className="empty">페이지 로딩 중</div>}
                         onRenderSuccess={() => registerCanvas(pageNumber)}
                       />
                     </div>
-                  </div>
+
+                    <div className="page-card-footer">
+                      <span className="subtle line-clamp-2">
+                        {textSnippets[pageNumber]
+                          ? textSnippets[pageNumber]
+                          : "텍스트가 적은 스캔 PDF면 썸네일 이미지를 보고 선택해 주세요."}
+                      </span>
+                    </div>
+                  </button>
                 );
               })}
             </div>
