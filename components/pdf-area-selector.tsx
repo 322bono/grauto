@@ -3,7 +3,7 @@
 import { startTransition, useEffect, useMemo, useRef, useState } from "react";
 import { Document, Page, pdfjs } from "react-pdf";
 import type { AnswerPagePayload, NormalizedRect, SelectedQuestionRegionPayload } from "@/lib/types";
-import { cropCanvasToDataUrl, extractPdfTextSnippets, normalizeRect } from "@/lib/pdf-utils";
+import { clonePdfBytes, cropCanvasToDataUrl, extractPdfTextSnippets, normalizeRect } from "@/lib/pdf-utils";
 
 pdfjs.GlobalWorkerOptions.workerSrc = "/pdf.worker.min.mjs";
 
@@ -61,8 +61,7 @@ export function PdfAreaSelector({
     }
 
     const observer = new ResizeObserver(([entry]) => {
-      const width = entry.contentRect.width;
-      setViewportWidth(Math.max(320, Math.min(760, width - 12)));
+      setViewportWidth(Math.max(320, Math.min(760, entry.contentRect.width - 12)));
     });
 
     observer.observe(wrapperRef.current);
@@ -93,11 +92,11 @@ export function PdfAreaSelector({
             return;
           }
 
-          const data = new Uint8Array(buffer);
-          setDocumentData(data);
+          const bytes = new Uint8Array(buffer);
+          setDocumentData(clonePdfBytes(bytes));
 
           try {
-            const snippets = await extractPdfTextSnippets(data);
+            const snippets = await extractPdfTextSnippets(bytes);
 
             if (!cancelled) {
               setTextSnippets(snippets);
@@ -108,9 +107,13 @@ export function PdfAreaSelector({
             }
           }
         })
-        .catch(() => {
+        .catch((error) => {
           if (!cancelled) {
-            setLoadError("PDF 파일을 읽을 수 없습니다. 파일이 손상되었거나 브라우저 접근에 실패했습니다.");
+            setLoadError(
+              error instanceof Error
+                ? `PDF 파일을 열지 못했습니다. ${error.message}`
+                : "PDF 파일을 열지 못했습니다. 다른 파일로 다시 시도해 주세요."
+            );
           }
         });
     });
@@ -217,15 +220,12 @@ export function PdfAreaSelector({
     }
 
     const rect = canvas.getBoundingClientRect();
-    const startX = event.clientX - rect.left;
-    const startY = event.clientY - rect.top;
-
     setDragging({
       pageNumber,
-      startX,
-      startY,
-      currentX: startX,
-      currentY: startY
+      startX: event.clientX - rect.left,
+      startY: event.clientY - rect.top,
+      currentX: event.clientX - rect.left,
+      currentY: event.clientY - rect.top
     });
   }
 
@@ -318,7 +318,7 @@ export function PdfAreaSelector({
       </div>
 
       {!file ? (
-        <div className="empty">PDF를 업로드하면 페이지 미리보기와 선택 도구가 여기에 표시됩니다.</div>
+        <div className="empty">PDF를 업로드하면 여기에서 페이지 미리보기와 선택 도구가 나타납니다.</div>
       ) : loadError ? (
         <div className="empty">{loadError}</div>
       ) : (
@@ -329,7 +329,7 @@ export function PdfAreaSelector({
             ) : (
               <span className="status ok">선택한 답안 페이지 {selectedPages.length}개</span>
             )}
-            <span className="subtle">텍스트가 적게 추출되는 PDF도 이미지 기반으로 계속 분석할 수 있습니다.</span>
+            <span className="subtle">텍스트가 적게 잡히는 스캔 PDF도 이미지 기준으로 계속 분석합니다.</span>
           </div>
 
           <Document
@@ -346,7 +346,7 @@ export function PdfAreaSelector({
               setNumPages(0);
               setLoadError(
                 error instanceof Error
-                  ? `PDF를 불러오지 못했습니다: ${error.message}`
+                  ? `PDF를 불러오지 못했습니다. ${error.message}`
                   : "PDF를 불러오지 못했습니다. 다른 PDF로 다시 시도해 주세요."
               );
             }}
@@ -354,7 +354,7 @@ export function PdfAreaSelector({
               setNumPages(0);
               setLoadError(
                 error instanceof Error
-                  ? `PDF 원본을 읽지 못했습니다: ${error.message}`
+                  ? `PDF 원본을 읽지 못했습니다. ${error.message}`
                   : "PDF 원본을 읽지 못했습니다. 다시 업로드해 주세요."
               );
             }}
@@ -373,7 +373,7 @@ export function PdfAreaSelector({
                         <div className="subtle">
                           {textSnippets[pageNumber]
                             ? textSnippets[pageNumber]
-                            : "텍스트가 거의 없는 스캔 PDF라면 이미지 분석을 중심으로 페이지를 매칭합니다."}
+                            : "텍스트가 거의 없는 스캔 PDF라면 이미지 분석과 페이지 위치 힌트로 매칭합니다."}
                         </div>
                       </div>
 
@@ -428,9 +428,11 @@ export function PdfAreaSelector({
 
                     {selectionMode === "region" && pageRegions.length > 0 ? (
                       <div className="selection-meta">
-                        {pageRegions.map((region, index) => (
+                        {pageRegions.map((region, localIndex) => (
                           <button key={region.id} type="button" className="selection-chip active" onClick={() => removeRegion(region.id)}>
-                            <strong>{pageNumber}페이지 영역 {index + 1}</strong>
+                            <strong>
+                              {pageNumber}페이지 영역 {localIndex + 1}
+                            </strong>
                             <span className="subtle">잘못 선택했다면 눌러서 제거</span>
                           </button>
                         ))}

@@ -5,13 +5,17 @@ import type { NormalizedRect } from "@/lib/types";
 
 pdfjs.GlobalWorkerOptions.workerSrc = "/pdf.worker.min.mjs";
 
+export function clonePdfBytes(source: Uint8Array) {
+  return new Uint8Array(source.slice());
+}
+
 function toPdfData(source: File | ArrayBuffer | Uint8Array) {
   if (source instanceof Uint8Array) {
-    return source;
+    return clonePdfBytes(source);
   }
 
   if (source instanceof ArrayBuffer) {
-    return new Uint8Array(source);
+    return new Uint8Array(source.slice(0));
   }
 
   return source.arrayBuffer().then((buffer) => new Uint8Array(buffer));

@@ -1,16 +1,18 @@
 "use client";
 
-import { useMemo, useRef } from "react";
+import { useMemo, useRef, useState } from "react";
 import { exportWrongAnswerPdf } from "@/lib/export-note";
+import { resolveLocalExplanationRect } from "@/lib/explanation-region";
 import { clampBoundingBox, renderCropStyle } from "@/lib/pdf-utils";
-import type { AnswerPagePayload, GradeResponsePayload, QuestionResult, SelectedQuestionRegionPayload } from "@/lib/types";
+import type { AnswerPagePayload, GradeResponsePayload, QuestionDeepAnalysis, QuestionResult, SelectedQuestionRegionPayload } from "@/lib/types";
 
 interface ResultsDashboardProps {
   result: GradeResponsePayload;
   questionSelections: SelectedQuestionRegionPayload[];
   answerPages: AnswerPagePayload[];
   examName: string;
-  onManualOverride: (selectionId: string, isCorrect: boolean) => void;
+  onManualOverride: (selectionId: string, isCorrect: boolean) => void | Promise<void>;
+  onRequestAnalysis?: (selectionId: string) => Promise<void>;
 }
 
 export function ResultsDashboard({
@@ -18,19 +20,54 @@ export function ResultsDashboard({
   questionSelections,
   answerPages,
   examName,
-  onManualOverride
+  onManualOverride,
+  onRequestAnalysis
 }: ResultsDashboardProps) {
   const noteRef = useRef<HTMLDivElement | null>(null);
+  const [loadingAnalysisId, setLoadingAnalysisId] = useState<string | null>(null);
 
   const selectionMap = useMemo(
     () => new Map(questionSelections.map((selection) => [selection.id, selection])),
     [questionSelections]
   );
   const answerPageMap = useMemo(() => new Map(answerPages.map((page) => [page.pageNumber, page])), [answerPages]);
-  const sortedQuestions = [...result.questions].sort(
-    (a, b) => (a.questionNumber ?? Number.MAX_SAFE_INTEGER) - (b.questionNumber ?? Number.MAX_SAFE_INTEGER)
+  const sortedQuestions = useMemo(
+    () =>
+      [...result.questions].sort(
+        (left, right) => (left.questionNumber ?? Number.MAX_SAFE_INTEGER) - (right.questionNumber ?? Number.MAX_SAFE_INTEGER)
+      ),
+    [result.questions]
   );
+  const pageQuestionMap = useMemo(() => {
+    const nextMap = new Map<number, QuestionResult[]>();
+
+    sortedQuestions.forEach((question) => {
+      if (question.matchedAnswerPageNumber === null) {
+        return;
+      }
+
+      const current = nextMap.get(question.matchedAnswerPageNumber) ?? [];
+      current.push(question);
+      nextMap.set(question.matchedAnswerPageNumber, current);
+    });
+
+    return nextMap;
+  }, [sortedQuestions]);
   const wrongQuestions = sortedQuestions.filter((question) => !question.isCorrect);
+
+  async function handleAnalysisClick(selectionId: string) {
+    if (!onRequestAnalysis) {
+      return;
+    }
+
+    setLoadingAnalysisId(selectionId);
+
+    try {
+      await onRequestAnalysis(selectionId);
+    } finally {
+      setLoadingAnalysisId((current) => (current === selectionId ? null : current));
+    }
+  }
 
   return (
     <div className="stack">
@@ -39,8 +76,7 @@ export function ResultsDashboard({
           <div>
             <h2 className="section-title">채점 결과 리포트</h2>
             <p className="subtle">
-              AI 자동 채점 후에도 각 문항에서 바로 정답/오답을 수동으로 수정할 수 있습니다. 현재 결과 모드:{" "}
-              {result.mode === "vision" ? "Vision 분석" : "로컬 데모"}
+              기본 채점은 빠르게 처리하고, 오답 분석은 필요한 문항에서만 버튼으로 따로 요청하도록 구성했습니다.
             </p>
           </div>
           <div className="button-row">
@@ -63,7 +99,7 @@ export function ResultsDashboard({
 
         <div className="summary-grid">
           <div className="metric-card">
-            <span className="subtle">총 문항 수</span>
+            <span className="subtle">총 문제 수</span>
             <strong>{result.summary.totalQuestions}</strong>
           </div>
           <div className="metric-card">
@@ -90,7 +126,7 @@ export function ResultsDashboard({
                 </span>
               ))
             ) : (
-              <span className="status ok">취약 유형이 뚜렷하게 보이지 않습니다.</span>
+              <span className="status ok">아직 뚜렷한 취약 유형은 보이지 않습니다.</span>
             )}
           </div>
           <p className="subtle" style={{ marginBottom: 0 }}>
@@ -119,6 +155,10 @@ export function ResultsDashboard({
         {sortedQuestions.map((question, index) => {
           const selection = selectionMap.get(question.selectionId);
           const answerPage = question.matchedAnswerPageNumber ? answerPageMap.get(question.matchedAnswerPageNumber) : undefined;
+          const pageQuestions = question.matchedAnswerPageNumber ? pageQuestionMap.get(question.matchedAnswerPageNumber) ?? [question] : [question];
+          const explanationRect = resolveLocalExplanationRect(question, pageQuestions);
+          const isAnalyzing = loadingAnalysisId === question.selectionId;
+          const analysis = normalizeAnalysis(question.deepAnalysis);
 
           return (
             <article className="card question-card" id={`question-${question.selectionId}`} key={question.selectionId}>
@@ -126,12 +166,12 @@ export function ResultsDashboard({
                 <div>
                   <h3 style={{ margin: 0 }}>{question.questionNumber ?? index + 1}번 문항</h3>
                   <p className="subtle" style={{ marginBottom: 0 }}>
-                    {question.detectedHeaderText || `문항 OCR 힌트가 없으면 ${selection?.pageNumber ?? "-"}페이지 기준으로 매칭했습니다.`}
+                    {question.detectedHeaderText || `페이지 ${selection?.pageNumber ?? "-"} 기준으로 매칭했습니다.`}
                   </p>
                 </div>
                 <div className="button-row">
                   <span className={`status ${question.isCorrect ? "ok" : "danger"}`}>{question.isCorrect ? "정답" : "오답"}</span>
-                  {question.reviewRequired ? <span className="status warn">검토 필요</span> : null}
+                  {question.reviewRequired ? <span className="status warn">재검토 필요</span> : null}
                   {question.overrideApplied ? <span className="status ok">수동 수정됨</span> : null}
                 </div>
               </div>
@@ -140,17 +180,17 @@ export function ResultsDashboard({
                 <div className="stack">
                   <div className="detail-grid">
                     <div className="detail-row">
-                      <strong>문제 보기</strong>
+                      <strong>문제</strong>
                       <div style={{ marginTop: 12 }}>
                         {selection ? <img alt="선택한 문제 영역" src={selection.snapshotDataUrl} /> : <div className="empty">문제 이미지가 없습니다.</div>}
                       </div>
                     </div>
 
                     <div className="detail-row">
-                      <strong>해설 보기</strong>
+                      <strong>해설</strong>
                       <div style={{ marginTop: 12 }}>
-                        {answerPage && question.explanationRegion ? (
-                          <CroppedImage imageDataUrl={answerPage.pageImageDataUrl} rect={question.explanationRegion} />
+                        {answerPage && explanationRect ? (
+                          <CroppedImage imageDataUrl={answerPage.pageImageDataUrl} rect={explanationRect} />
                         ) : answerPage ? (
                           <img alt="매칭된 답안 페이지" src={answerPage.pageImageDataUrl} />
                         ) : (
@@ -163,43 +203,79 @@ export function ResultsDashboard({
 
                 <div className="detail-grid">
                   <div className="detail-row">
-                    <strong>자동 채점</strong>
+                    <strong>기본 채점</strong>
                     <p style={{ marginBottom: 0 }}>
                       학생 답안: {question.studentAnswer || "미인식"} <br />
                       정답: {question.correctAnswer || "미인식"} <br />
                       유형: {questionTypeLabel(question.questionType)} <br />
+                      정답 여부: {String(question.isCorrect)} <br />
                       신뢰도: {Math.round(question.confidence * 100)}%
                     </p>
                   </div>
 
                   <div className="detail-row">
-                    <strong>풀이 흔적 분석</strong>
+                    <strong>풀이 흔적</strong>
                     <p style={{ marginBottom: 0 }}>
                       판정: {authenticityLabel(question.workEvidence.authenticity)} <br />
                       근거: {question.workEvidence.rationale} <br />
-                      인식된 표식: {question.workEvidence.detectedMarks.join(", ") || "없음"}
+                      인식된 흔적: {question.workEvidence.detectedMarks.join(", ") || "없음"}
                     </p>
                   </div>
 
                   <div className="detail-row">
-                    <strong>{question.isCorrect ? "해설 요약" : "오답 피드백"}</strong>
+                    <strong>{question.isCorrect ? "짧은 해설 메모" : "오답 메모"}</strong>
                     <p style={{ marginBottom: 0 }}>
-                      {question.isCorrect ? "풀이 포인트" : "틀린 이유"}: {question.feedback.mistakeReason}
-                      <br />
-                      복습 포인트: {question.feedback.recommendedReview}
+                      판단 메모: {question.feedback.mistakeReason}
                       <br />
                       해설 요약: {question.feedback.explanation}
+                      <br />
+                      복습 포인트: {question.feedback.recommendedReview}
                     </p>
                   </div>
 
                   <div className="button-row">
-                    <button type="button" className="cta ghost" onClick={() => onManualOverride(question.selectionId, true)}>
+                    <button type="button" className="cta ghost" onClick={() => void onManualOverride(question.selectionId, true)}>
                       정답으로 수정
                     </button>
-                    <button type="button" className="cta ghost" onClick={() => onManualOverride(question.selectionId, false)}>
+                    <button type="button" className="cta ghost" onClick={() => void onManualOverride(question.selectionId, false)}>
                       오답으로 수정
                     </button>
+                    {!question.isCorrect ? (
+                      <button
+                        type="button"
+                        className="cta ghost"
+                        disabled={!onRequestAnalysis || isAnalyzing}
+                        onClick={() => void handleAnalysisClick(question.selectionId)}
+                      >
+                        {isAnalyzing ? "분석 중..." : analysis ? "분석 다시 요청" : "오답 분석 요청"}
+                      </button>
+                    ) : null}
                   </div>
+
+                  {analysis ? (
+                    <div className="analysis-card">
+                      <div className="analysis-card-head">
+                        <strong>오답 분석</strong>
+                        <span className="status warn">버튼 호출</span>
+                      </div>
+                      <div className="detail-row">
+                        <strong>단계별 이유</strong>
+                        <ol className="analysis-list">
+                          {analysis.reasonSteps.map((step) => (
+                            <li key={step}>{step}</li>
+                          ))}
+                        </ol>
+                      </div>
+                      <div className="detail-row">
+                        <strong>답지 해설 기준</strong>
+                        <p style={{ marginBottom: 0 }}>{analysis.answerSheetBasis}</p>
+                      </div>
+                      <div className="detail-row">
+                        <strong>한 줄 요약</strong>
+                        <p style={{ marginBottom: 0 }}>{analysis.oneLineSummary}</p>
+                      </div>
+                    </div>
+                  ) : null}
                 </div>
               </div>
             </article>
@@ -211,7 +287,7 @@ export function ResultsDashboard({
         <div className="selector-head">
           <div>
             <h2 className="section-title">자동 오답 노트</h2>
-            <p className="subtle">틀린 문제만 추려 문제 이미지와 해설을 다시 볼 수 있도록 구성했습니다.</p>
+            <p className="subtle">틀린 문제만 따로 모아 문제 이미지와 해설을 다시 볼 수 있게 정리했습니다.</p>
           </div>
         </div>
 
@@ -220,6 +296,9 @@ export function ResultsDashboard({
             wrongQuestions.map((question) => {
               const selection = selectionMap.get(question.selectionId);
               const answerPage = question.matchedAnswerPageNumber ? answerPageMap.get(question.matchedAnswerPageNumber) : undefined;
+              const pageQuestions = question.matchedAnswerPageNumber ? pageQuestionMap.get(question.matchedAnswerPageNumber) ?? [question] : [question];
+              const explanationRect = resolveLocalExplanationRect(question, pageQuestions);
+              const analysis = normalizeAnalysis(question.deepAnalysis);
 
               return (
                 <div className="note-card" key={`note-${question.selectionId}`} data-note-card="true">
@@ -229,17 +308,17 @@ export function ResultsDashboard({
                       {selection ? <img alt="오답 문제 영역" src={selection.snapshotDataUrl} /> : null}
                       <div className="detail-row">
                         <strong>틀린 이유</strong>
-                        <p style={{ marginBottom: 0 }}>{question.feedback.mistakeReason}</p>
+                        <p style={{ marginBottom: 0 }}>{analysis?.oneLineSummary || question.feedback.mistakeReason}</p>
                       </div>
                     </div>
                     <div className="stack">
-                      {answerPage && question.explanationRegion ? (
-                        <CroppedImage imageDataUrl={answerPage.pageImageDataUrl} rect={question.explanationRegion} />
+                      {answerPage && explanationRect ? (
+                        <CroppedImage imageDataUrl={answerPage.pageImageDataUrl} rect={explanationRect} />
                       ) : answerPage ? (
                         <img alt="정답 해설" src={answerPage.pageImageDataUrl} />
                       ) : null}
                       <div className="detail-row">
-                        <strong>정답 해설</strong>
+                        <strong>답지 해설</strong>
                         <p style={{ marginBottom: 0 }}>{question.feedback.explanation}</p>
                       </div>
                     </div>
@@ -248,12 +327,37 @@ export function ResultsDashboard({
               );
             })
           ) : (
-            <div className="empty">현재 오답이 없습니다. 지금 상태 그대로 PDF로 저장하면 전체 해설 리포트처럼 볼 수 있습니다.</div>
+            <div className="empty">현재 오답이 없습니다. 이 상태 그대로 PDF로 저장하면 전체 해설 리포트처럼 활용할 수 있습니다.</div>
           )}
         </div>
       </div>
     </div>
   );
+}
+
+function normalizeAnalysis(analysis?: QuestionDeepAnalysis | null) {
+  if (!analysis) {
+    return null;
+  }
+
+  const reasonSteps =
+    analysis.reasonSteps && analysis.reasonSteps.length > 0
+      ? analysis.reasonSteps
+      : [analysis.logicalGap, analysis.conceptGap, analysis.modelSolution].filter(
+          (value): value is string => Boolean(value && value.trim())
+        );
+
+  const oneLineSummary = analysis.oneLineSummary || analysis.studyTip;
+
+  if (reasonSteps.length === 0 && !oneLineSummary) {
+    return null;
+  }
+
+  return {
+    reasonSteps: reasonSteps.length > 0 ? reasonSteps : ["추가 분석 결과가 비어 있습니다."],
+    answerSheetBasis: analysis.answerSheetBasis || "답지 해설 기준 문장을 아직 정리하지 못했습니다.",
+    oneLineSummary: oneLineSummary || "개념 연결과 풀이 순서를 다시 점검해 보세요."
+  };
 }
 
 function CroppedImage({
@@ -294,13 +398,13 @@ function questionTypeLabel(type: QuestionResult["questionType"]) {
 function authenticityLabel(type: QuestionResult["workEvidence"]["authenticity"]) {
   switch (type) {
     case "solved":
-      return "실제 풀이 흔적 있음";
+      return "직접 풀이 흔적이 있습니다";
     case "guessed":
-      return "찍은 가능성 높음";
+      return "찍은 가능성이 높습니다";
     case "blank":
-      return "미응답";
+      return "거의 비어 있습니다";
     case "unclear":
-      return "판단 보류";
+      return "판단이 애매합니다";
     default:
       return type;
   }

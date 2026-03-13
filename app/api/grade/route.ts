@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { imagePartFromDataUrl, type GeminiPart, generateGeminiJson } from "@/lib/gemini";
 import { rankAnswerPageCandidates } from "@/lib/page-matching";
 import { buildSummary } from "@/lib/summary";
 import type {
@@ -12,117 +13,167 @@ import type {
 
 export const runtime = "nodejs";
 
-const SYSTEM_PROMPT = `
-You are an exam-grading orchestrator for Korean study sheets.
-Your job is to align each selected question crop with the correct answer page, extract question number and header clues, recognize the student's answer, decide whether the student genuinely attempted the problem or likely guessed, and produce concise Korean feedback.
+const MAX_CANDIDATE_PAGES = 3;
 
-Rules:
-1. Match carefully across question page number, visible header text, problem numbering, layout cues, and answer choice markers.
-2. Distinguish question_type among multiple-choice, short-answer, essay.
-3. For multiple-choice, inspect circles/check marks and infer the chosen option.
-4. For short-answer, inspect boxed numeric or textual answers.
-5. For essay, inspect full written sentences or formulas.
-6. work_evidence.authenticity must be one of solved, guessed, blank, unclear.
-7. If recognition is uncertain, set review_required to true and lower confidence.
-8. explanation_region and answer_region must be normalized 0..1 bounding boxes relative to the matched answer page image.
-9. Return JSON only. No markdown fences. No extra prose.
-
-Return shape:
-{
-  "questions": [
-    {
-      "selection_id": "string",
-      "question_number": 1,
-      "detected_header_text": "중단원 점검 p.34",
-      "question_type": "multiple-choice",
-      "student_answer": "3번",
-      "correct_answer": "2번",
-      "is_correct": false,
-      "score": 0,
-      "max_score": 1,
-      "confidence": 0.84,
-      "review_required": false,
-      "matched_answer_page_number": 7,
-      "matched_answer_reason": "문제 상단의 p.34 / 11번이 답지 7페이지의 11번과 일치",
-      "answer_region": { "x": 0.12, "y": 0.18, "width": 0.3, "height": 0.12 },
-      "explanation_region": { "x": 0.08, "y": 0.22, "width": 0.84, "height": 0.28 },
-      "work_evidence": {
-        "authenticity": "solved",
-        "rationale": "풀이식이 2줄 이상 보이고 최종답 표기가 있음",
-        "extracted_work": "x^2-5x+6=0 ...",
-        "detected_marks": ["동그라미", "지우개 흔적"]
-      },
-      "feedback": {
-        "mistake_reason": "인수분해 뒤 근을 하나만 선택함",
-        "explanation": "정답은 두 근을 모두 고려해 조건을 만족하는 값을 고르는 방식입니다.",
-        "recommended_review": "인수분해 후 해 검산 과정을 다시 연습하세요.",
-        "concept_tags": ["인수분해", "근의 판별"]
+const GRADE_RESPONSE_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["questions"],
+  properties: {
+    questions: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: [
+          "selection_id",
+          "question_number",
+          "detected_header_text",
+          "question_type",
+          "student_answer",
+          "correct_answer",
+          "is_correct",
+          "score",
+          "max_score",
+          "confidence",
+          "review_required",
+          "matched_answer_page_number",
+          "matched_answer_reason",
+          "answer_region",
+          "explanation_region",
+          "work_evidence",
+          "feedback"
+        ],
+        properties: {
+          selection_id: { type: "string" },
+          question_number: { type: "number" },
+          detected_header_text: { type: "string" },
+          question_type: { type: "string", enum: ["multiple-choice", "short-answer", "essay"] },
+          student_answer: { type: "string" },
+          correct_answer: { type: "string" },
+          is_correct: { type: "boolean" },
+          score: { type: "number" },
+          max_score: { type: "number" },
+          confidence: { type: "number" },
+          review_required: { type: "boolean" },
+          matched_answer_page_number: { type: "number" },
+          matched_answer_reason: { type: "string" },
+          answer_region: {
+            type: "object",
+            additionalProperties: false,
+            required: ["x", "y", "width", "height"],
+            properties: {
+              x: { type: "number" },
+              y: { type: "number" },
+              width: { type: "number" },
+              height: { type: "number" }
+            }
+          },
+          explanation_region: {
+            type: "object",
+            additionalProperties: false,
+            required: ["x", "y", "width", "height"],
+            properties: {
+              x: { type: "number" },
+              y: { type: "number" },
+              width: { type: "number" },
+              height: { type: "number" }
+            }
+          },
+          work_evidence: {
+            type: "object",
+            additionalProperties: false,
+            required: ["authenticity", "rationale", "extracted_work", "detected_marks"],
+            properties: {
+              authenticity: { type: "string", enum: ["solved", "guessed", "blank", "unclear"] },
+              rationale: { type: "string" },
+              extracted_work: { type: "string" },
+              detected_marks: {
+                type: "array",
+                items: { type: "string" }
+              }
+            }
+          },
+          feedback: {
+            type: "object",
+            additionalProperties: false,
+            required: ["mistake_reason", "explanation", "recommended_review", "concept_tags"],
+            properties: {
+              mistake_reason: { type: "string" },
+              explanation: { type: "string" },
+              recommended_review: { type: "string" },
+              concept_tags: {
+                type: "array",
+                items: { type: "string" }
+              }
+            }
+          }
+        }
       }
     }
-  ]
-}
+  }
+} as const;
+
+const SYSTEM_PROMPT = `
+당신은 시험지 자동 채점 보조 시스템입니다.
+이번 호출에서는 기본 채점만 수행합니다.
+
+목표:
+1. 문제 영역과 답안 페이지를 정확하게 매칭합니다.
+2. 학생의 답이 정답 리스트에 있는지 확인하고 is_correct를 true 또는 false로만 판단합니다.
+3. 현재 화면에 남아 있는 풀이와 최종 표기만 보고 authenticity를 solved / guessed / blank / unclear 중 하나로 고릅니다.
+4. 지운 흔적, 덧칠, 수정 흔적은 최종 풀이로 명확할 때만 참고하고, 애매하면 무시합니다.
+5. 해설 영역과 정답 영역의 대략적인 박스를 찾습니다.
+6. feedback은 아주 짧게만 작성합니다.
+
+중요 제약:
+- 반드시 JSON만 반환합니다.
+- 보이지 않는 보기, 기호, 문장, 조건을 추측하지 않습니다.
+- selection_id 순서대로 questions 배열을 채웁니다.
+- 정오 판단의 핵심은 "학생 답이 정답 리스트에 포함되는지 여부"입니다.
+- feedback.mistake_reason은 1문장 이내로 작성합니다.
+- feedback.explanation은 2문장 이내로 작성합니다.
+- feedback.recommended_review는 1문장 이내로 작성합니다.
+- feedback.concept_tags는 최대 3개까지만 넣습니다.
+- 확신이 낮으면 review_required를 true로 둡니다.
+- answer_region과 explanation_region은 0~1 정규화 좌표로 반환합니다.
 `;
 
 export async function POST(request: Request) {
   const payload = (await request.json()) as GradeRequestPayload;
 
   if (!payload.questionSelections?.length || !payload.answerPages?.length) {
-    return new NextResponse("문제 영역과 답안 페이지가 필요합니다.", { status: 400 });
+    return new NextResponse("문제 영역과 답안 페이지를 먼저 선택해 주세요.", { status: 400 });
   }
 
-  const apiKey = process.env.OPENAI_API_KEY;
+  const apiKey = process.env.GEMINI_API_KEY;
+  const model = process.env.GEMINI_MODEL ?? "gemini-2.5-flash";
 
   if (!apiKey) {
-    return NextResponse.json(buildFallbackResponse(payload, "OPENAI_API_KEY가 없어 로컬 데모 결과를 반환했습니다."));
+    return NextResponse.json(buildFallbackResponse(payload, "GEMINI_API_KEY가 없어 데모 결과를 반환했습니다."));
   }
 
   try {
-    const response = await fetch("https://api.openai.com/v1/responses", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`
-      },
-      body: JSON.stringify({
-        model: process.env.OPENAI_VISION_MODEL ?? "gpt-4.1",
-        input: [
-          {
-            role: "system",
-            content: [{ type: "input_text", text: SYSTEM_PROMPT }]
-          },
-          {
-            role: "user",
-            content: buildUserContent(payload)
-          }
-        ],
-        max_output_tokens: 5000
-      })
+    const parsed = await generateGeminiJson<{ questions?: unknown[] }>({
+      apiKey,
+      model,
+      systemInstruction: SYSTEM_PROMPT,
+      parts: buildUserParts(payload),
+      responseJsonSchema: GRADE_RESPONSE_SCHEMA,
+      maxOutputTokens: estimateOutputTokens(payload.questionSelections.length),
+      temperature: 0.05
     });
 
-    if (!response.ok) {
-      throw new Error(await response.text());
-    }
-
-    const raw = await response.json();
-    const outputText = extractOutputText(raw);
-
-    if (!outputText) {
-      throw new Error("Vision API 응답에서 텍스트 결과를 찾지 못했습니다.");
-    }
-
-    const parsed = JSON.parse(stripJsonFence(outputText));
-    const normalized = normalizeResponse(payload, parsed);
-    return NextResponse.json(normalized);
+    return NextResponse.json(normalizeResponse(payload, parsed));
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Vision 채점에 실패했습니다.";
+    const message = error instanceof Error ? error.message : "자동 채점 중 오류가 발생했습니다.";
     return NextResponse.json(buildFallbackResponse(payload, message));
   }
 }
 
-function buildUserContent(payload: GradeRequestPayload) {
-  const content: Array<Record<string, unknown>> = [
+function buildUserParts(payload: GradeRequestPayload): GeminiPart[] {
+  const parts: GeminiPart[] = [
     {
-      type: "input_text",
       text: [
         `시험명: ${payload.metadata.examName || "미입력"}`,
         `과목: ${payload.metadata.subject}`,
@@ -130,82 +181,53 @@ function buildUserContent(payload: GradeRequestPayload) {
         `풀이 시간: ${payload.metadata.durationMinutes ?? "미입력"}분`,
         `시험 날짜: ${payload.metadata.takenAt}`,
         "",
-        "질문 선택 영역들을 문제 번호 순으로 정렬하고, 각 영역마다 가장 적절한 답안/해설 페이지를 찾아 주세요.",
-        "OCR 단서가 약할 경우 상단 제목, 페이지 번호, 문항 번호, 시각적 배치를 함께 사용해 보수적으로 판단하세요."
+        "선택된 문제별로 가장 가능성 높은 답안 페이지 후보를 비교해 기본 채점만 수행해 주세요.",
+        "오답 원인 설명은 길게 쓰지 말고 정오 판단과 짧은 메모만 남겨 주세요."
       ].join("\n")
     }
   ];
 
   payload.questionSelections.forEach((selection, index) => {
     const rankedCandidates = rankAnswerPageCandidates(selection, payload.answerPages);
-    const candidatePages = (payload.answerPages.length <= 8 ? rankedCandidates : rankedCandidates.slice(0, 5)).map((item) => item.page);
+    const candidatePages = rankedCandidates.slice(0, MAX_CANDIDATE_PAGES).map((item) => item.page);
     const candidateHints = rankedCandidates
-      .slice(0, Math.min(5, rankedCandidates.length))
-      .map((item) => `- answer_page=${item.page.pageNumber}, heuristic_score=${item.score.toFixed(2)}, reasons=${item.reasons.join(" / ")}`)
+      .slice(0, MAX_CANDIDATE_PAGES)
+      .map((item) => `- page=${item.page.pageNumber}, score=${item.score.toFixed(2)}, reasons=${item.reasons.join(" / ")}`)
       .join("\n");
 
-    content.push({
-      type: "input_text",
+    parts.push({
       text: [
-        `문제 선택 ${index + 1} / selection_id=${selection.id} / question_page=${selection.pageNumber} / text_hint=${selection.extractedTextSnippet || "없음"}`,
-        "다음은 로컬 휴리스틱으로 추린 답안 후보 순위입니다.",
-        candidateHints
+        `question_index=${index + 1}`,
+        `selection_id=${selection.id}`,
+        `question_page=${selection.pageNumber}`,
+        `text_hint=${selection.extractedTextSnippet || "없음"}`,
+        "답안 후보 페이지:",
+        candidateHints || "- 없음"
       ].join("\n")
     });
-    content.push({
-      type: "input_image",
-      image_url: selection.snapshotDataUrl,
-      detail: "high"
+
+    parts.push(imagePartFromDataUrl(selection.snapshotDataUrl));
+    parts.push({
+      text: `문제 전체 페이지 참고 이미지 (selection_id=${selection.id})`
     });
-    content.push({
-      type: "input_text",
-      text: `문제 선택 ${index + 1}의 전체 페이지`
-    });
-    content.push({
-      type: "input_image",
-      image_url: selection.pageImageDataUrl,
-      detail: "low"
-    });
-    candidatePages.forEach((page) => {
-      content.push({
-        type: "input_text",
-        text: `답안 후보 page=${page.pageNumber} / text_hint=${page.extractedTextSnippet || "없음"}`
+    parts.push(imagePartFromDataUrl(selection.pageImageDataUrl));
+
+    candidatePages.forEach((page, candidateIndex) => {
+      parts.push({
+        text: `답안 후보 page=${page.pageNumber}, text_hint=${page.extractedTextSnippet || "없음"}, primary_candidate=${candidateIndex === 0}`
       });
-      content.push({
-        type: "input_image",
-        image_url: page.pageImageDataUrl,
-        detail: "high"
-      });
+      parts.push(imagePartFromDataUrl(page.pageImageDataUrl));
     });
   });
 
-  return content;
+  return parts;
 }
 
-function extractOutputText(raw: unknown): string {
-  if (raw && typeof raw === "object" && "output_text" in raw && typeof raw.output_text === "string") {
-    return raw.output_text;
-  }
-
-  if (raw && typeof raw === "object" && "output" in raw && Array.isArray(raw.output)) {
-    const texts = raw.output.flatMap((item: any) =>
-      Array.isArray(item.content)
-        ? item.content
-            .filter((contentItem: any) => typeof contentItem?.text === "string")
-            .map((contentItem: any) => contentItem.text as string)
-        : []
-    );
-    return texts.join("\n").trim();
-  }
-
-  return "";
+function estimateOutputTokens(questionCount: number) {
+  return Math.min(2200, Math.max(700, 260 + questionCount * 220));
 }
 
-function stripJsonFence(text: string) {
-  return text.replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```$/i, "").trim();
-}
-
-function normalizeResponse(payload: GradeRequestPayload, parsed: any): GradeResponsePayload {
+function normalizeResponse(payload: GradeRequestPayload, parsed: { questions?: unknown[] }): GradeResponsePayload {
   const questions = payload.questionSelections.map((selection, index) =>
     normalizeQuestion(payload, selection, parsed?.questions?.[index], index)
   );
@@ -218,7 +240,12 @@ function normalizeResponse(payload: GradeRequestPayload, parsed: any): GradeResp
   };
 }
 
-function normalizeQuestion(payload: GradeRequestPayload, selection: GradeRequestPayload["questionSelections"][number], raw: any, index: number): QuestionResult {
+function normalizeQuestion(
+  payload: GradeRequestPayload,
+  selection: GradeRequestPayload["questionSelections"][number],
+  raw: any,
+  index: number
+): QuestionResult {
   const answerPageNumber = payload.answerPages.some((page) => page.pageNumber === raw?.matched_answer_page_number)
     ? raw.matched_answer_page_number
     : (payload.answerPages[0]?.pageNumber ?? null);
@@ -240,23 +267,26 @@ function normalizeQuestion(payload: GradeRequestPayload, selection: GradeRequest
     confidence: clamp(toNumber(raw?.confidence, 0.48), 0, 1),
     reviewRequired: Boolean(raw?.review_required),
     matchedAnswerPageNumber: answerPageNumber,
-    matchedAnswerReason: toStringValue(raw?.matched_answer_reason, "페이지/상단 헤더/문항 위치 단서를 종합해 매칭했습니다."),
+    matchedAnswerReason: toStringValue(
+      raw?.matched_answer_reason,
+      "페이지 번호, 상단 제목, 문항 배열을 함께 비교해 가장 가까운 답안 페이지로 매칭했습니다."
+    ),
     answerRegion: normalizeBox(raw?.answer_region),
     explanationRegion: normalizeBox(raw?.explanation_region),
     workEvidence: {
       authenticity: normalizeAuthenticity(raw?.work_evidence?.authenticity),
-      rationale: toStringValue(raw?.work_evidence?.rationale, "풀이 흔적을 명확히 읽지 못해 보수적으로 판정했습니다."),
+      rationale: toStringValue(raw?.work_evidence?.rationale, "풀이 흔적이 충분하지 않아 보수적으로 판단했습니다."),
       extractedWork: toStringValue(raw?.work_evidence?.extracted_work, ""),
       detectedMarks: Array.isArray(raw?.work_evidence?.detected_marks)
         ? raw.work_evidence.detected_marks.filter((item: unknown) => typeof item === "string")
         : []
     },
     feedback: {
-      mistakeReason: toStringValue(raw?.feedback?.mistake_reason, "오답 원인을 충분히 특정하지 못해 다시 확인이 필요합니다."),
-      explanation: toStringValue(raw?.feedback?.explanation, "답안지 해설을 직접 확인해 한 번 더 검토해 주세요."),
-      recommendedReview: toStringValue(raw?.feedback?.recommended_review, "틀린 문제를 같은 유형끼리 다시 풀어보세요."),
+      mistakeReason: toStringValue(raw?.feedback?.mistake_reason, "답안을 다시 한 번 확인해 주세요."),
+      explanation: toStringValue(raw?.feedback?.explanation, "답지 해설 이미지를 함께 보며 다시 확인해 보세요."),
+      recommendedReview: toStringValue(raw?.feedback?.recommended_review, "같은 유형 문제를 1~2문항 더 풀어보는 것을 추천합니다."),
       conceptTags: Array.isArray(raw?.feedback?.concept_tags)
-        ? raw.feedback.concept_tags.filter((item: unknown) => typeof item === "string")
+        ? raw.feedback.concept_tags.filter((item: unknown) => typeof item === "string").slice(0, 3)
         : []
     }
   };
@@ -276,20 +306,20 @@ function buildFallbackResponse(payload: GradeRequestPayload, reason: string): Gr
     confidence: 0.18,
     reviewRequired: true,
     matchedAnswerPageNumber: payload.answerPages[index]?.pageNumber ?? payload.answerPages[0]?.pageNumber ?? null,
-    matchedAnswerReason: "실제 Vision OCR을 사용하지 못해 첫 번째 후보 페이지를 임시 매칭했습니다.",
+    matchedAnswerReason: "실제 채점 호출이 실패해 첫 번째 후보 페이지를 임시로 매칭했습니다.",
     answerRegion: { x: 0.08, y: 0.08, width: 0.34, height: 0.12 },
     explanationRegion: { x: 0.06, y: 0.16, width: 0.88, height: 0.72 },
     workEvidence: {
       authenticity: "unclear",
-      rationale: "현재는 데모 모드이므로 실제 풀이 흔적 판정이 비활성화되어 있습니다.",
+      rationale: "현재는 자동 풀이 흔적 판정이 비활성화되어 있습니다.",
       extractedWork: "",
       detectedMarks: []
     },
     feedback: {
-      mistakeReason: "Vision 모델이 연결되지 않아 실제 정오 판정을 수행하지 못했습니다.",
-      explanation: `환경 설정 후에는 선택한 문제와 답안 페이지를 비교해 자동 해설을 채웁니다. 현재 메시지: ${reason}`,
-      recommendedReview: "`.env`에 OPENAI_API_KEY를 넣은 뒤 다시 채점해 주세요.",
-      conceptTags: ["수동 검토 필요"]
+      mistakeReason: "실제 정오 판정을 완료하지 못했습니다.",
+      explanation: `환경 설정이 완전하지 않아 데모 결과를 반환했습니다. 현재 메시지: ${reason}`,
+      recommendedReview: "환경 변수를 확인한 뒤 다시 채점해 주세요.",
+      conceptTags: ["설정 확인 필요"]
     }
   }));
 

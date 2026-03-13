@@ -5,10 +5,10 @@ runConfig:
   maxInstances: 2
 
 env:
-  - variable: OPENAI_VISION_MODEL
-    value: gpt-4.1
+  - variable: GEMINI_MODEL
+    value: gemini-2.5-flash
     availability:
       - BUILD
       - RUNTIME
-  - variable: OPENAI_API_KEY
-    secret: openAiApiKey
+  - variable: GEMINI_API_KEY
+    secret: geminiApiKey

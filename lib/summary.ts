@@ -2,18 +2,18 @@ import type { GradeResponsePayload, GradeSummary, QuestionResult } from "@/lib/t
 
 function encouragementForAccuracy(rate: number) {
   if (rate >= 0.95) {
-    return "현재 거의 완벽합니다. 오답보다 풀이 전략을 유지하는 복습이 더 중요합니다.";
+    return "전체적으로 매우 안정적입니다. 틀린 문제보다 풀이 과정을 다시 정리하는 복습이 더 큰 도움이 됩니다.";
   }
 
   if (rate >= 0.75) {
-    return "전반적인 기초는 탄탄합니다. 틀린 유형만 다시 묶어 복습하면 빠르게 점수가 올라갑니다.";
+    return "기본 개념은 잘 잡혀 있습니다. 자주 틀린 유형만 다시 정리하면 점수를 더 끌어올릴 수 있습니다.";
   }
 
   if (rate >= 0.5) {
-    return "핵심 개념과 풀이 루틴을 다시 정리하면 확실히 개선 여지가 큽니다.";
+    return "개념과 풀이 순서를 함께 복습하는 것이 좋습니다. 틀린 이유를 확인하고 같은 유형을 다시 풀어보세요.";
   }
 
-  return "개념 복습과 대표 문제 재풀이를 먼저 권장합니다. 지금은 정확한 오답 분석이 가장 큰 지름길입니다.";
+  return "핵심 개념부터 다시 다지는 편이 좋습니다. 오답 원인을 천천히 정리하면 다음 시험에서 훨씬 안정적으로 풀 수 있습니다.";
 }
 
 export function buildSummary(questions: QuestionResult[]): GradeSummary {
@@ -32,7 +32,7 @@ export function buildSummary(questions: QuestionResult[]): GradeSummary {
     });
 
   const weakAreas = Array.from(tagCounts.entries())
-    .sort((a, b) => b[1] - a[1])
+    .sort((left, right) => right[1] - left[1])
     .slice(0, 5)
     .map(([tag]) => tag);
 
@@ -47,7 +47,11 @@ export function buildSummary(questions: QuestionResult[]): GradeSummary {
   };
 }
 
-export function applyManualOverride(result: GradeResponsePayload, selectionId: string, isCorrect: boolean): GradeResponsePayload {
+export function applyManualOverride(
+  result: GradeResponsePayload,
+  selectionId: string,
+  isCorrect: boolean
+): GradeResponsePayload {
   const questions = result.questions.map((question) => {
     if (question.selectionId !== selectionId) {
       return question;

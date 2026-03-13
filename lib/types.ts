@@ -66,6 +66,17 @@ export interface WorkEvidence {
   detectedMarks: string[];
 }
 
+export interface QuestionDeepAnalysis {
+  requestedAt: string;
+  reasonSteps?: string[];
+  answerSheetBasis?: string;
+  oneLineSummary?: string;
+  logicalGap?: string;
+  conceptGap?: string;
+  modelSolution?: string;
+  studyTip?: string;
+}
+
 export interface QuestionResult {
   selectionId: string;
   questionNumber: number | null;
@@ -84,6 +95,7 @@ export interface QuestionResult {
   explanationRegion: BoundingBox | null;
   workEvidence: WorkEvidence;
   feedback: QuestionFeedback;
+  deepAnalysis?: QuestionDeepAnalysis;
   overrideApplied?: boolean;
 }
 
@@ -102,6 +114,18 @@ export interface GradeResponsePayload {
   mode: "vision" | "fallback";
   summary: GradeSummary;
   questions: QuestionResult[];
+}
+
+export interface AnalyzeRequestPayload {
+  metadata: ExamMetadata;
+  question: QuestionResult;
+  selection: SelectedQuestionRegionPayload;
+  answerPage: AnswerPagePayload | null;
+  explanationCropDataUrl?: string | null;
+}
+
+export interface AnalyzeResponsePayload {
+  analysis: QuestionDeepAnalysis;
 }
 
 export interface StoredExamRecord {

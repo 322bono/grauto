@@ -1,15 +1,18 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { ExamMetadataForm } from "@/components/exam-metadata-form";
 import { PdfAreaSelector } from "@/components/pdf-area-selector";
 import { ResultsDashboard } from "@/components/results-dashboard";
 import { observeAuthUser, signInWithGoogle, signOutUser } from "@/lib/firebase/auth";
 import { syncExamRecordToCloud, updateCloudRecordSummary } from "@/lib/firebase/cloud-records";
-import { listRecords, saveRecord } from "@/lib/local-db";
+import { cropImageDataUrl } from "@/lib/image-crop";
+import { saveRecord } from "@/lib/local-db";
 import { applyManualOverride } from "@/lib/summary";
 import type {
+  AnalyzeRequestPayload,
+  AnalyzeResponsePayload,
   AnswerPagePayload,
   AuthUserProfile,
   CloudSyncState,
@@ -20,6 +23,17 @@ import type {
   StoredExamRecord,
   UploadMode
 } from "@/lib/types";
+
+type AppStage = "landing" | "workspace";
+type WorkspaceStep = "metadata" | "questions" | "answers" | "grade" | "results";
+
+const WORKSPACE_STEPS: Array<{ id: WorkspaceStep; label: string }> = [
+  { id: "metadata", label: "시험 정보" },
+  { id: "questions", label: "문제 영역" },
+  { id: "answers", label: "답안 페이지" },
+  { id: "grade", label: "채점 실행" },
+  { id: "results", label: "결과 보기" }
+];
 
 function getTodayLocalDate() {
   const now = new Date();
@@ -37,7 +51,8 @@ const defaultMetadata: ExamMetadata = {
 };
 
 export function AutoGraderApp() {
-  const [stage, setStage] = useState<"landing" | "workspace">("landing");
+  const [stage, setStage] = useState<AppStage>("landing");
+  const [workspaceStep, setWorkspaceStep] = useState<WorkspaceStep>("metadata");
   const [menuOpen, setMenuOpen] = useState(false);
   const [uploadMode, setUploadMode] = useState<UploadMode>("single");
   const [selectedMode, setSelectedMode] = useState<UploadMode | null>(null);
@@ -47,7 +62,6 @@ export function AutoGraderApp() {
   const [questionSelections, setQuestionSelections] = useState<SelectedQuestionRegionPayload[]>([]);
   const [answerPages, setAnswerPages] = useState<AnswerPagePayload[]>([]);
   const [result, setResult] = useState<GradeResponsePayload | null>(null);
-  const [records, setRecords] = useState<StoredExamRecord[]>([]);
   const [currentRecordId, setCurrentRecordId] = useState<string | null>(null);
   const [currentRecordCreatedAt, setCurrentRecordCreatedAt] = useState<string | null>(null);
   const [currentCloudSync, setCurrentCloudSync] = useState<CloudSyncState | undefined>();
@@ -59,10 +73,18 @@ export function AutoGraderApp() {
 
   const effectiveAnswerFile = uploadMode === "single" ? questionFile : answerFile;
   const uploadReady = Boolean(questionFile && effectiveAnswerFile);
+  const currentStepIndex = WORKSPACE_STEPS.findIndex((step) => step.id === workspaceStep);
+
+  const selectionSummary = useMemo(
+    () => ({
+      questionCount: questionSelections.length,
+      answerCount: answerPages.length
+    }),
+    [answerPages.length, questionSelections.length]
+  );
 
   useEffect(() => {
     setMetadata((current) => (current.takenAt ? current : { ...current, takenAt: getTodayLocalDate() }));
-    void refreshRecords();
 
     const unsubscribe = observeAuthUser((user) => {
       setAuthUser(user);
@@ -80,10 +102,11 @@ export function AutoGraderApp() {
     };
   }, [stage]);
 
-  async function refreshRecords() {
-    const nextRecords = await listRecords();
-    setRecords(nextRecords);
-  }
+  useEffect(() => {
+    if (stage === "workspace") {
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    }
+  }, [stage, workspaceStep]);
 
   async function handleSignIn() {
     setIsSigningIn(true);
@@ -102,8 +125,8 @@ export function AutoGraderApp() {
   async function handleSignOut() {
     try {
       await signOutUser();
-      setSyncMessage("로그아웃되었습니다. 이후 채점 결과는 현재 브라우저 로컬 기록에만 저장됩니다.");
       setCurrentCloudSync(undefined);
+      setSyncMessage("로그아웃되었습니다. 이후 채점 결과는 현재 브라우저 로컬 기록에만 저장됩니다.");
       setMenuOpen(false);
     } catch (error) {
       window.alert(error instanceof Error ? error.message : "로그아웃에 실패했습니다.");
@@ -112,7 +135,6 @@ export function AutoGraderApp() {
 
   async function persistLocalRecord(record: StoredExamRecord) {
     await saveRecord(record);
-    await refreshRecords();
   }
 
   async function syncCurrentRecordToCloud(record: StoredExamRecord, questionPdf: File, answerPdf: File) {
@@ -217,6 +239,8 @@ export function AutoGraderApp() {
       } else {
         setSyncMessage("비로그인 상태입니다. 이번 채점 결과는 현재 브라우저 로컬 기록에만 저장됩니다.");
       }
+
+      setWorkspaceStep("results");
     } catch (error) {
       window.alert(error instanceof Error ? error.message : "채점 중 오류가 발생했습니다.");
     } finally {
@@ -250,34 +274,111 @@ export function AutoGraderApp() {
     if (authUser && currentCloudSync) {
       try {
         await updateCloudRecordSummary(authUser.uid, updatedRecord, updated);
-        setSyncMessage("수동 채점 수정 내용이 클라우드 기록에도 반영되었습니다.");
+        setSyncMessage("수동 수정 내용이 클라우드 기록에도 반영되었습니다.");
       } catch (error) {
         window.alert(error instanceof Error ? error.message : "클라우드 기록 갱신에 실패했습니다.");
       }
     }
   }
 
-  function openRecord(record: StoredExamRecord) {
-    setStage("workspace");
-    setSelectedMode(record.uploadMode);
-    setUploadMode(record.uploadMode);
-    setCurrentRecordId(record.id);
-    setCurrentRecordCreatedAt(record.createdAt);
-    setCurrentCloudSync(record.cloudSync);
-    setMetadata(record.metadata);
-    setResult(record.result);
-    setQuestionSelections(record.questionSelections);
-    setAnswerPages(record.answerPages);
-    setSyncMessage(record.cloudSync ? "이 기록은 클라우드와 동기화되어 있습니다." : "이 기록은 현재 브라우저 로컬에만 저장되어 있습니다.");
+  async function handleRequestAnalysis(selectionId: string) {
+    if (!result || !currentRecordId || !currentRecordCreatedAt) {
+      return;
+    }
+
+    const question = result.questions.find((item) => item.selectionId === selectionId);
+    const selection = questionSelections.find((item) => item.id === selectionId);
+    const answerPage = question?.matchedAnswerPageNumber
+      ? answerPages.find((item) => item.pageNumber === question.matchedAnswerPageNumber) ?? null
+      : null;
+
+    if (!question || !selection) {
+      window.alert("분석할 문항 정보를 찾지 못했습니다.");
+      return;
+    }
+
+    try {
+      const explanationCropDataUrl =
+        answerPage && question.explanationRegion
+          ? await cropImageDataUrl(answerPage.pageImageDataUrl, question.explanationRegion)
+          : null;
+
+      const response = await fetch("/api/analyze", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          metadata,
+          question,
+          selection,
+          answerPage,
+          explanationCropDataUrl
+        } satisfies AnalyzeRequestPayload)
+      });
+
+      if (!response.ok) {
+        throw new Error(await response.text());
+      }
+
+      const { analysis } = (await response.json()) as AnalyzeResponsePayload;
+      const updatedResult: GradeResponsePayload = {
+        ...result,
+        questions: result.questions.map((item) =>
+          item.selectionId === selectionId
+            ? {
+                ...item,
+                deepAnalysis: analysis
+              }
+            : item
+        )
+      };
+
+      setResult(updatedResult);
+
+      const updatedRecord: StoredExamRecord = {
+        id: currentRecordId,
+        createdAt: currentRecordCreatedAt,
+        uploadMode,
+        metadata,
+        questionFileName: questionFile?.name ?? "unknown-question.pdf",
+        answerFileName: effectiveAnswerFile?.name ?? "unknown-answer.pdf",
+        questionSelections,
+        answerPages,
+        result: updatedResult,
+        cloudSync: currentCloudSync
+      };
+
+      await persistLocalRecord(updatedRecord);
+
+      if (authUser && currentCloudSync) {
+        await updateCloudRecordSummary(authUser.uid, updatedRecord, updatedResult);
+        setSyncMessage("추가 분석 결과를 로컬과 클라우드 기록에 저장했습니다.");
+      } else {
+        setSyncMessage("추가 분석 결과를 현재 로컬 기록에 저장했습니다.");
+      }
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : "추가 분석 요청에 실패했습니다.");
+    }
+  }
+
+  function resetWorkspaceStep(step: WorkspaceStep) {
+    setWorkspaceStep(step);
   }
 
   function handleModeChange(mode: UploadMode) {
     setSelectedMode(mode);
     setUploadMode(mode);
-    setResult(null);
+    setQuestionFile(null);
+    setAnswerFile(null);
     setQuestionSelections([]);
     setAnswerPages([]);
+    setResult(null);
+    setCurrentRecordId(null);
+    setCurrentRecordCreatedAt(null);
+    setCurrentCloudSync(undefined);
     setSyncMessage("");
+    setWorkspaceStep("metadata");
 
     if (mode === "single") {
       setAnswerFile(null);
@@ -290,7 +391,45 @@ export function AutoGraderApp() {
     }
 
     setStage("workspace");
+    setWorkspaceStep("metadata");
     setMenuOpen(false);
+  }
+
+  function moveToNextStep() {
+    if (workspaceStep === "metadata") {
+      setWorkspaceStep("questions");
+      return;
+    }
+
+    if (workspaceStep === "questions" && questionSelections.length > 0) {
+      setWorkspaceStep("answers");
+      return;
+    }
+
+    if (workspaceStep === "answers" && answerPages.length > 0) {
+      setWorkspaceStep("grade");
+    }
+  }
+
+  function moveToPreviousStep() {
+    if (workspaceStep === "results") {
+      setWorkspaceStep("grade");
+      return;
+    }
+
+    if (workspaceStep === "grade") {
+      setWorkspaceStep("answers");
+      return;
+    }
+
+    if (workspaceStep === "answers") {
+      setWorkspaceStep("questions");
+      return;
+    }
+
+    if (workspaceStep === "questions") {
+      setWorkspaceStep("metadata");
+    }
   }
 
   return (
@@ -335,23 +474,18 @@ export function AutoGraderApp() {
             <button type="button" className="drawer-login-button" disabled={isSigningIn} onClick={handleSignIn}>
               {isSigningIn ? "로그인 중..." : "Google로 로그인"}
             </button>
-            <p className="subtle" style={{ marginBottom: 0 }}>
-              로그인하면 채점 기록과 PDF를 다른 기기에서도 다시 볼 수 있습니다.
-            </p>
           </div>
         )}
 
         {syncMessage ? <div className="detail-row">{syncMessage}</div> : null}
 
-        {authUser ? (
-          <div className="menu-meta menu-meta-auth">
-            <Link className="drawer-record-link" href="/records" onClick={() => setMenuOpen(false)}>
-              <span className="drawer-record-arrow">↗</span>
-              <span className="drawer-record-text">채점 기록</span>
-              <span className="drawer-record-chevron">›</span>
-            </Link>
-          </div>
-        ) : null}
+        <div className="menu-meta menu-meta-auth">
+          <Link className="drawer-record-link" href="/records" onClick={() => setMenuOpen(false)}>
+            <span className="drawer-record-arrow">↗</span>
+            <span className="drawer-record-text">채점 기록</span>
+            <span className="drawer-record-chevron">›</span>
+          </Link>
+        </div>
 
         <div className="menu-drawer-foot">
           <span className="menu-foot-wordmark">Grauto</span>
@@ -367,9 +501,9 @@ export function AutoGraderApp() {
         <section className="intro-stage sketch-intro">
           <div className="sketch-copy">
             <h1 className="sketch-title">
-              <span>이제는</span>
-              <span className="accent">채점까지</span>
-              <span> 자동으로.</span>
+              <span className="sketch-title-line">
+                이제는 <span className="accent">채점까지</span> 자동으로.
+              </span>
             </h1>
             <div className="sketch-subtitle">Grauto</div>
           </div>
@@ -394,7 +528,7 @@ export function AutoGraderApp() {
               >
                 듀얼 PDF 파일
               </button>
-              <p>답지 PDF와 문제 PDF가 분리되어 있을 때</p>
+              <p>문제 PDF와 답지 PDF가 분리되어 있을 때</p>
             </div>
           </div>
 
@@ -413,21 +547,21 @@ export function AutoGraderApp() {
                   <UploadTile
                     id="answer-file"
                     title="답지 PDF 업로드"
-                    subtitle="정답과 해설이 포함된 답지 PDF"
+                    subtitle="정답과 해설이 들어 있는 답지 PDF"
                     file={answerFile}
                     onChange={(file) => setAnswerFile(file)}
                   />
                 ) : (
                   <div className="upload-hint-card">
                     <strong>단일 PDF 모드</strong>
-                    <span>이 모드에서는 업로드한 한 개의 PDF를 문제 페이지와 답안 페이지 선택에 함께 사용합니다.</span>
+                    <span>업로드한 한 개의 PDF를 문제 페이지와 답안 페이지 선택에 함께 사용합니다.</span>
                   </div>
                 )}
               </div>
 
               <div className="upload-footer">
                 <button type="button" className="cta" disabled={!uploadReady} onClick={goToWorkspace}>
-                  {uploadReady ? "채점 화면으로 이동" : "PDF를 먼저 선택해 주세요"}
+                  {uploadReady ? "다음" : "PDF를 먼저 선택해 주세요"}
                 </button>
               </div>
             </div>
@@ -448,107 +582,182 @@ export function AutoGraderApp() {
               </div>
             </div>
 
-            <section className="workspace-shell stack">
-              <div className="workspace-header">
-                <div>
-                  <h2 className="section-title">채점 워크스페이스</h2>
-                  <p className="subtle">시험 메타데이터를 입력하고 문제 영역과 답안 페이지를 선택한 뒤 자동 채점을 실행할 수 있습니다.</p>
-                </div>
-                <div className="workspace-status">
-                  <span className="status ok">문제 PDF 준비됨</span>
-                  {effectiveAnswerFile ? <span className="status ok">답안 PDF 준비됨</span> : null}
-                </div>
-              </div>
-
-              <ExamMetadataForm metadata={metadata} onChange={setMetadata} />
-
-              <PdfAreaSelector
-                title="문제 영역 선택"
-                helperText="문제 PDF에서 실제로 채점할 문항 부분만 드래그해서 선택해 주세요."
-                file={questionFile}
-                selectionMode="region"
-                accentLabel="문제 선택"
-                onRegionsChange={setQuestionSelections}
-              />
-
-              <PdfAreaSelector
-                title="답안 / 해설 페이지 선택"
-                helperText="정답과 해설이 들어 있는 페이지를 고르면 문항 번호와 페이지 힌트를 바탕으로 자동 매칭합니다."
-                file={effectiveAnswerFile}
-                selectionMode="page"
-                accentLabel="답안 페이지 선택"
-                onPagesChange={setAnswerPages}
-              />
-
-              <div className="card pad stack">
-                <div className="selector-head">
-                  <div>
-                    <h2 className="section-title">자동 채점</h2>
-                    <p className="subtle">선택한 문제 영역과 답안 페이지를 바탕으로 Vision 분석과 자동 채점을 실행합니다.</p>
-                  </div>
-                  <div className="button-row">
-                    <span className="status warn">문제 {questionSelections.length}개</span>
-                    <span className="status warn">답안 페이지 {answerPages.length}개</span>
-                  </div>
-                </div>
-
-                <div className="button-row">
-                  <button type="button" className="cta" disabled={isSubmitting || isSyncing} onClick={gradeExam}>
-                    {isSubmitting ? "자동 채점 중..." : "채점 시작"}
-                  </button>
-                  <span className="subtle">
-                    {authUser
-                      ? "로그인 상태에서는 채점 결과와 PDF가 클라우드에 저장됩니다."
-                      : "비로그인 상태에서는 결과가 현재 브라우저 로컬 기록에만 저장됩니다."}
-                  </span>
-                </div>
-              </div>
-            </section>
-          </section>
-
-          {result ? (
-            <ResultsDashboard
-              result={result}
-              questionSelections={questionSelections}
-              answerPages={answerPages}
-              examName={metadata.examName}
-              onManualOverride={handleManualOverride}
-            />
-          ) : null}
-
-          <section className="library-grid">
-            <div className="card pad stack">
+            <div className="card pad stack step-shell">
               <div className="selector-head">
                 <div>
-                  <h2 className="section-title">로컬 채점 기록</h2>
-                  <p className="subtle">이 브라우저에 저장된 최근 채점 기록을 바로 다시 열 수 있습니다.</p>
+                  <h2 className="section-title">단계별 채점 진행</h2>
+                  <p className="subtle">한 번에 하나씩만 보이도록 구성했습니다. 아래 단계 순서대로 진행하면 됩니다.</p>
                 </div>
-                <span className="status warn">{records.length}개</span>
+                <span className="status ok">
+                  {currentStepIndex + 1} / {WORKSPACE_STEPS.length}
+                </span>
               </div>
 
-              <div className="records-list">
-                {records.length > 0 ? (
-                  records.map((record) => (
-                    <button type="button" className="record-card" key={record.id} onClick={() => openRecord(record)}>
-                      <div className="record-head">
-                        <strong>{record.metadata.examName || "이름 없는 시험지"}</strong>
-                        <span className="status ok">{new Date(record.createdAt).toLocaleDateString("ko-KR")}</span>
-                      </div>
-                      <div className="subtle">
-                        {record.metadata.subject} · 정답 {record.result.summary.correctCount}/{record.result.summary.totalQuestions}
-                      </div>
-                      {record.cloudSync ? (
-                        <div className="button-row" style={{ marginTop: 8 }}>
-                          <span className="status ok">클라우드 동기화됨</span>
-                        </div>
-                      ) : null}
+              <div className="step-progress">
+                {WORKSPACE_STEPS.map((step, index) => {
+                  const isActive = step.id === workspaceStep;
+                  const isComplete = index < currentStepIndex;
+                  const isClickable = isComplete || step.id === "metadata" || (step.id === "results" && Boolean(result));
+
+                  return (
+                    <button
+                      key={step.id}
+                      type="button"
+                      className={`step-pill ${isActive ? "active" : ""} ${isComplete ? "complete" : ""}`}
+                      disabled={!isClickable}
+                      onClick={() => resetWorkspaceStep(step.id)}
+                    >
+                      <span>{index + 1}</span>
+                      <strong>{step.label}</strong>
                     </button>
-                  ))
-                ) : (
-                  <div className="empty">아직 저장된 채점 기록이 없습니다.</div>
-                )}
+                  );
+                })}
               </div>
             </div>
+
+            {workspaceStep === "metadata" ? (
+              <div className="step-panel stack">
+                <ExamMetadataForm metadata={metadata} onChange={setMetadata} />
+                <div className="card pad step-actions">
+                  <div className="subtle">시험 정보는 선택 사항입니다. 비워 둬도 다음 단계로 넘어갈 수 있습니다.</div>
+                  <div className="button-row">
+                    <button type="button" className="cta" onClick={moveToNextStep}>
+                      다음
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ) : null}
+
+            {workspaceStep === "questions" ? (
+              <div className="step-panel stack">
+                <PdfAreaSelector
+                  title="문제 영역 선택"
+                  helperText="문제 PDF에서 실제로 채점할 문항 부분만 드래그해서 선택해 주세요."
+                  file={questionFile}
+                  selectionMode="region"
+                  accentLabel="문제 선택"
+                  onRegionsChange={setQuestionSelections}
+                />
+                <div className="card pad step-actions">
+                  <div className="subtle">현재 선택한 문제 영역: {selectionSummary.questionCount}개</div>
+                  <div className="button-row">
+                    <button type="button" className="cta ghost" onClick={moveToPreviousStep}>
+                      이전
+                    </button>
+                    <button type="button" className="cta" disabled={selectionSummary.questionCount === 0} onClick={moveToNextStep}>
+                      다음
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ) : null}
+
+            {workspaceStep === "answers" ? (
+              <div className="step-panel stack">
+                <PdfAreaSelector
+                  title="답안 / 해설 페이지 선택"
+                  helperText="정답과 해설이 들어 있는 페이지를 고르면 문항 번호와 페이지 힌트를 바탕으로 자동 매칭합니다."
+                  file={effectiveAnswerFile}
+                  selectionMode="page"
+                  accentLabel="답안 페이지 선택"
+                  onPagesChange={setAnswerPages}
+                />
+                <div className="card pad step-actions">
+                  <div className="subtle">현재 선택한 답안 페이지: {selectionSummary.answerCount}개</div>
+                  <div className="button-row">
+                    <button type="button" className="cta ghost" onClick={moveToPreviousStep}>
+                      이전
+                    </button>
+                    <button type="button" className="cta" disabled={selectionSummary.answerCount === 0} onClick={moveToNextStep}>
+                      다음
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ) : null}
+
+            {workspaceStep === "grade" ? (
+              <div className="step-panel stack">
+                <div className="card pad stack">
+                  <div className="selector-head">
+                    <div>
+                      <h2 className="section-title">자동 채점 실행</h2>
+                      <p className="subtle">선택한 문항과 답안 페이지를 바탕으로 Gemini 2.5 Flash 자동 채점을 실행합니다.</p>
+                    </div>
+                    <div className="button-row">
+                      <span className="status warn">문제 {selectionSummary.questionCount}개</span>
+                      <span className="status warn">답안 페이지 {selectionSummary.answerCount}개</span>
+                    </div>
+                  </div>
+
+                  <div className="detail-grid">
+                    <div className="detail-row">
+                      <strong>업로드 모드</strong>
+                      <p style={{ marginBottom: 0 }}>{uploadMode === "single" ? "단일 PDF" : "듀얼 PDF"}</p>
+                    </div>
+                    <div className="detail-row">
+                      <strong>문제 파일</strong>
+                      <p style={{ marginBottom: 0 }}>{questionFile?.name ?? "미선택"}</p>
+                    </div>
+                    <div className="detail-row">
+                      <strong>답안 파일</strong>
+                      <p style={{ marginBottom: 0 }}>{effectiveAnswerFile?.name ?? "미선택"}</p>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="card pad step-actions">
+                  <div className="subtle">
+                    {authUser
+                      ? "로그인 상태에서는 채점 결과와 PDF가 클라우드에도 저장됩니다."
+                      : "비로그인 상태에서는 채점 결과가 현재 브라우저 로컬 기록에만 저장됩니다."}
+                  </div>
+                  <div className="button-row">
+                    <button type="button" className="cta ghost" onClick={moveToPreviousStep}>
+                      이전
+                    </button>
+                    <button type="button" className="cta" disabled={isSubmitting || isSyncing} onClick={gradeExam}>
+                      {isSubmitting ? "채점 중..." : "채점 시작"}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ) : null}
+
+            {workspaceStep === "results" ? (
+              <div className="step-panel stack">
+                {result ? (
+                  <>
+                    <ResultsDashboard
+                      result={result}
+                      questionSelections={questionSelections}
+                      answerPages={answerPages}
+                      examName={metadata.examName}
+                      onManualOverride={handleManualOverride}
+                      onRequestAnalysis={handleRequestAnalysis}
+                    />
+
+                    <div className="card pad step-actions">
+                      <div className="subtle">채점 기록은 메뉴의 `채점 기록` 또는 아래 버튼에서 다시 열 수 있습니다.</div>
+                      <div className="button-row">
+                        <button type="button" className="cta ghost" onClick={() => setWorkspaceStep("grade")}>
+                          채점 단계로 돌아가기
+                        </button>
+                        <Link className="cta ghost" href="/records">
+                          채점 기록 보기
+                        </Link>
+                        <button type="button" className="cta" onClick={() => setStage("landing")}>
+                          새 PDF 선택
+                        </button>
+                      </div>
+                    </div>
+                  </>
+                ) : (
+                  <div className="empty">아직 채점 결과가 없습니다. 채점 실행 단계에서 먼저 채점을 시작해 주세요.</div>
+                )}
+              </div>
+            ) : null}
           </section>
         </>
       )}

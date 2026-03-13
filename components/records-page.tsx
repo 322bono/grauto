@@ -4,10 +4,23 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { ResultsDashboard } from "@/components/results-dashboard";
 import { observeAuthUser } from "@/lib/firebase/auth";
-import { deleteCloudRecord, fetchCloudRecordDetail, subscribeToCloudRecords, updateCloudRecordSummary } from "@/lib/firebase/cloud-records";
+import {
+  deleteCloudRecord,
+  fetchCloudRecordDetail,
+  subscribeToCloudRecords,
+  updateCloudRecordSummary
+} from "@/lib/firebase/cloud-records";
+import { cropImageDataUrl } from "@/lib/image-crop";
 import { deleteRecord, listRecords, saveRecord } from "@/lib/local-db";
 import { applyManualOverride } from "@/lib/summary";
-import type { AuthUserProfile, CloudExamRecord, CloudSyncState, StoredExamRecord } from "@/lib/types";
+import type {
+  AnalyzeRequestPayload,
+  AnalyzeResponsePayload,
+  AuthUserProfile,
+  CloudExamRecord,
+  CloudSyncState,
+  StoredExamRecord
+} from "@/lib/types";
 
 function buildCloudSync(record: CloudExamRecord): CloudSyncState {
   return {
@@ -80,7 +93,7 @@ export function RecordsPage() {
       record.cloudSync ? cloudRecords.find((cloudRecord) => cloudRecord.id === record.cloudSync?.remoteId) ?? null : null
     );
     setSelectedRecord(record);
-    setStatusMessage("로컬에 저장된 상세 채점 결과를 열었습니다.");
+    setStatusMessage("로컬에 저장된 상세 채점 결과를 불러왔습니다.");
   }
 
   async function handleViewCloudRecord(record: CloudExamRecord) {
@@ -121,7 +134,7 @@ export function RecordsPage() {
     const shouldDeleteCloud = Boolean(record.cloudSync?.remoteId && authUser);
     const confirmed = window.confirm(
       shouldDeleteCloud
-        ? "이 기록은 클라우드와 연결되어 있습니다. 로컬 기록과 클라우드 기록을 함께 삭제할까요?"
+        ? "이 기록은 클라우드와 연결되어 있습니다. 로컬과 클라우드 기록을 함께 삭제할까요?"
         : "이 로컬 기록을 삭제할까요?"
     );
 
@@ -188,9 +201,82 @@ export function RecordsPage() {
 
     if (authUser && syncedCloud) {
       await updateCloudRecordSummary(authUser.uid, updatedRecord, updatedResult);
-      setStatusMessage("수동 수정 내용이 클라우드 상세 기록에도 반영되었습니다.");
+      setStatusMessage("수동 수정 내용을 로컬과 클라우드 기록에 반영했습니다.");
     } else {
-      setStatusMessage("수동 수정 내용이 로컬 기록에 반영되었습니다.");
+      setStatusMessage("수동 수정 내용을 로컬 기록에 반영했습니다.");
+    }
+  }
+
+  async function handleRequestAnalysis(selectionId: string) {
+    if (!selectedRecord) {
+      return;
+    }
+
+    const question = selectedRecord.result.questions.find((item) => item.selectionId === selectionId);
+    const selection = selectedRecord.questionSelections.find((item) => item.id === selectionId);
+    const answerPage = question?.matchedAnswerPageNumber
+      ? selectedRecord.answerPages.find((item) => item.pageNumber === question.matchedAnswerPageNumber) ?? null
+      : null;
+
+    if (!question || !selection) {
+      window.alert("분석할 문항 정보를 찾지 못했습니다.");
+      return;
+    }
+
+    try {
+      const explanationCropDataUrl =
+        answerPage && question.explanationRegion
+          ? await cropImageDataUrl(answerPage.pageImageDataUrl, question.explanationRegion)
+          : null;
+
+      const response = await fetch("/api/analyze", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          metadata: selectedRecord.metadata,
+          question,
+          selection,
+          answerPage,
+          explanationCropDataUrl
+        } satisfies AnalyzeRequestPayload)
+      });
+
+      if (!response.ok) {
+        throw new Error(await response.text());
+      }
+
+      const { analysis } = (await response.json()) as AnalyzeResponsePayload;
+      const syncedCloud = selectedRecord.cloudSync ?? (selectedCloudRecord ? buildCloudSync(selectedCloudRecord) : undefined);
+      const updatedRecord: StoredExamRecord = {
+        ...selectedRecord,
+        result: {
+          ...selectedRecord.result,
+          questions: selectedRecord.result.questions.map((item) =>
+            item.selectionId === selectionId
+              ? {
+                  ...item,
+                  deepAnalysis: analysis
+                }
+              : item
+          )
+        },
+        cloudSync: syncedCloud
+      };
+
+      setSelectedRecord(updatedRecord);
+      await saveRecord(updatedRecord);
+      await refreshLocalRecords();
+
+      if (authUser && syncedCloud) {
+        await updateCloudRecordSummary(authUser.uid, updatedRecord, updatedRecord.result);
+        setStatusMessage("추가 분석 결과를 로컬과 클라우드 기록에 저장했습니다.");
+      } else {
+        setStatusMessage("추가 분석 결과를 로컬 기록에 저장했습니다.");
+      }
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : "추가 분석 요청에 실패했습니다.");
     }
   }
 
@@ -211,14 +297,14 @@ export function RecordsPage() {
       <section className="records-hero">
         <div>
           <h1>채점 기록</h1>
-          <p>문제 PDF, 답지 PDF, 문항별 채점 결과와 해설 이미지를 다시 열어볼 수 있는 기록 공간입니다.</p>
+          <p>문제 PDF, 답지 PDF, 문항별 채점 결과와 해설 이미지를 다시 확인할 수 있는 기록 공간입니다.</p>
         </div>
         <div className="hero-chip-row">
           <span className="status warn">로컬 기록 {localRecords.length}개</span>
           {authUser ? (
             <span className="status ok">클라우드 기록 {cloudRecords.length}개</span>
           ) : (
-            <span className="status warn">로그인하면 클라우드 기록도 함께 보입니다</span>
+            <span className="status warn">로그인하면 클라우드 기록도 함께 볼 수 있습니다</span>
           )}
         </div>
       </section>
@@ -229,7 +315,7 @@ export function RecordsPage() {
         <div className="selector-head">
           <div>
             <h2 className="section-title">기록 목록</h2>
-            <p className="subtle">카드에서 결과 보기를 누르면 아래에 문항별 상세 리포트가 열립니다.</p>
+            <p className="subtle">카드에서 결과 보기를 누르면 아래에 상세 리포트가 열립니다.</p>
           </div>
         </div>
 
@@ -297,7 +383,7 @@ export function RecordsPage() {
               <div>
                 <h2 className="section-title">{selectedRecord.metadata.examName || "선택한 채점 기록"}</h2>
                 <p className="subtle">
-                  문항별 정오 판정, 틀린 이유, 부족한 개념, 해설 이미지를 한 번에 다시 확인할 수 있습니다.
+                  문항별 정오 수정, 추가 분석 요청, 해설 이미지 확인을 한 번에 다시 볼 수 있습니다.
                 </p>
               </div>
               <div className="button-row">
@@ -313,6 +399,7 @@ export function RecordsPage() {
             answerPages={selectedRecord.answerPages}
             examName={selectedRecord.metadata.examName}
             onManualOverride={handleManualOverride}
+            onRequestAnalysis={handleRequestAnalysis}
           />
         </section>
       ) : null}

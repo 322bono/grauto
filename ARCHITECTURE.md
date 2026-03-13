@@ -35,7 +35,7 @@ flowchart LR
   E --> G["/api/grade"]
   F --> G
   G --> H["로컬 휴리스틱 후보 매칭"]
-  H --> I["Vision 분석"]
+  H --> I["Gemini 2.5 Flash 분석"]
   I --> J["정답 비교 + 풀이 흔적 판정 + 해설 생성"]
   J --> K["결과 리포트"]
   K --> L["수동 정오 수정"]
