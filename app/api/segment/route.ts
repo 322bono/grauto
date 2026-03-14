@@ -10,33 +10,83 @@ import type {
 
 export const runtime = "nodejs";
 
-const QUESTION_SEGMENT_SCHEMA = {
+const QUESTION_REGION_SCHEMA = {
   type: "object",
   additionalProperties: false,
-  required: ["question_regions"],
+  required: ["question_number", "bounds", "text_snippet"],
   properties: {
-    question_regions: {
+    question_number: {
+      anyOf: [{ type: "number" }, { type: "null" }],
+    },
+    bounds: {
+      type: "object",
+      additionalProperties: false,
+      required: ["x", "y", "width", "height"],
+      properties: {
+        x: { type: "number" },
+        y: { type: "number" },
+        width: { type: "number" },
+        height: { type: "number" },
+      },
+    },
+    text_snippet: { type: "string" },
+  },
+} as const;
+
+const ANSWER_ANCHOR_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["question_number", "bounds", "text_snippet", "segments"],
+  properties: {
+    question_number: {
+      anyOf: [{ type: "number" }, { type: "null" }],
+    },
+    bounds: {
+      type: "object",
+      additionalProperties: false,
+      required: ["x", "y", "width", "height"],
+      properties: {
+        x: { type: "number" },
+        y: { type: "number" },
+        width: { type: "number" },
+        height: { type: "number" },
+      },
+    },
+    text_snippet: { type: "string" },
+    segments: {
       type: "array",
       items: {
         type: "object",
         additionalProperties: false,
-        required: ["question_number", "bounds", "text_snippet"],
+        required: ["x", "y", "width", "height"],
         properties: {
-          question_number: {
-            anyOf: [{ type: "number" }, { type: "null" }],
+          x: { type: "number" },
+          y: { type: "number" },
+          width: { type: "number" },
+          height: { type: "number" },
+        },
+      },
+    },
+  },
+} as const;
+
+const QUESTION_SEGMENT_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["pages"],
+  properties: {
+    pages: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["page_number", "question_regions"],
+        properties: {
+          page_number: { type: "number" },
+          question_regions: {
+            type: "array",
+            items: QUESTION_REGION_SCHEMA,
           },
-          bounds: {
-            type: "object",
-            additionalProperties: false,
-            required: ["x", "y", "width", "height"],
-            properties: {
-              x: { type: "number" },
-              y: { type: "number" },
-              width: { type: "number" },
-              height: { type: "number" },
-            },
-          },
-          text_snippet: { type: "string" },
         },
       },
     },
@@ -46,43 +96,19 @@ const QUESTION_SEGMENT_SCHEMA = {
 const ANSWER_SEGMENT_SCHEMA = {
   type: "object",
   additionalProperties: false,
-  required: ["answer_anchors"],
+  required: ["pages"],
   properties: {
-    answer_anchors: {
+    pages: {
       type: "array",
       items: {
         type: "object",
         additionalProperties: false,
-        required: ["question_number", "bounds", "text_snippet", "segments"],
+        required: ["page_number", "answer_anchors"],
         properties: {
-          question_number: {
-            anyOf: [{ type: "number" }, { type: "null" }],
-          },
-          bounds: {
-            type: "object",
-            additionalProperties: false,
-            required: ["x", "y", "width", "height"],
-            properties: {
-              x: { type: "number" },
-              y: { type: "number" },
-              width: { type: "number" },
-              height: { type: "number" },
-            },
-          },
-          text_snippet: { type: "string" },
-          segments: {
+          page_number: { type: "number" },
+          answer_anchors: {
             type: "array",
-            items: {
-              type: "object",
-              additionalProperties: false,
-              required: ["x", "y", "width", "height"],
-              properties: {
-                x: { type: "number" },
-                y: { type: "number" },
-                width: { type: "number" },
-                height: { type: "number" },
-              },
-            },
+            items: ANSWER_ANCHOR_SCHEMA,
           },
         },
       },
@@ -91,34 +117,38 @@ const ANSWER_SEGMENT_SCHEMA = {
 } as const;
 
 const QUESTION_SEGMENT_PROMPT = `
-You receive one scanned exam question page.
+You receive multiple scanned exam question pages in a single request.
 Return JSON only.
 
 Task:
-- Detect every real question block on the page.
+- For each input page, detect every real question block on that page.
 - Each block must contain exactly one question stem and its related choices or answer area.
 - Ignore page headers, section headers, page numbers, score labels, and isolated answer choices.
 - Do not merge two different questions into one block.
 - If the page has multiple columns, still separate each question correctly.
 
-Rules:
+Output rules:
+- Return one page entry for every provided page_number.
+- page_number must exactly match the input page_number for that image.
 - question_number should be the visible problem number when readable, otherwise null.
 - bounds must be normalized 0..1.
 - bounds must be tight and must not include neighboring questions.
-- Sort questions by their real question number when visible. Otherwise use reading order.
+- Sort question_regions by real question number when visible. Otherwise use reading order.
 `;
 
 const ANSWER_SEGMENT_PROMPT = `
-You receive one scanned answer or explanation page.
+You receive multiple scanned answer or explanation pages in a single request.
 Return JSON only.
 
 Task:
-- Detect each question's explanation block on the page.
+- For each input page, detect each question's explanation block on that page.
 - Each returned item must belong to one question number only.
 - Do not return the whole page for one question.
 - If one question's explanation continues in another column or another vertical segment on the same page, include all pieces in segments.
 
-Rules:
+Output rules:
+- Return one page entry for every provided page_number.
+- page_number must exactly match the input page_number for that image.
 - question_number should be the visible question number when readable, otherwise null.
 - bounds must cover the overall explanation area for that question on the current page.
 - segments must contain one or more tight normalized boxes in reading order.
@@ -141,23 +171,10 @@ export async function POST(request: Request) {
   }
 
   try {
-    const pages: SegmentResponsePayload["pages"] = [];
-
-    for (const page of payload.pages) {
-      if (payload.mode === "questions") {
-        const questionRegions = await segmentQuestionPage(apiKey, model, page.pageNumber, page.pageImageDataUrl, page.textSnippet);
-        pages.push({
-          pageNumber: page.pageNumber,
-          questionRegions,
-        });
-      } else {
-        const answerAnchors = await segmentAnswerPage(apiKey, model, page.pageNumber, page.pageImageDataUrl, page.textSnippet);
-        pages.push({
-          pageNumber: page.pageNumber,
-          answerAnchors,
-        });
-      }
-    }
+    const pages =
+      payload.mode === "questions"
+        ? await segmentQuestionPages(apiKey, model, payload.pages)
+        : await segmentAnswerPages(apiKey, model, payload.pages);
 
     return NextResponse.json({
       mode: payload.mode,
@@ -165,79 +182,163 @@ export async function POST(request: Request) {
     } satisfies SegmentResponsePayload);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Segmentation failed.";
+
+    if (isQuotaError(message)) {
+      return new NextResponse("Gemini 무료 등급 분당 요청 제한에 걸렸습니다. 잠시 후 다시 시도해 주세요.", {
+        status: 429,
+      });
+    }
+
     return new NextResponse(message, { status: 500 });
   }
 }
 
-async function segmentQuestionPage(
+async function segmentQuestionPages(
   apiKey: string,
   model: string,
-  pageNumber: number,
-  pageImageDataUrl: string,
-  textSnippet?: string
+  pages: SegmentRequestPayload["pages"]
 ) {
   const parsed = await generateGeminiJson<{
-    question_regions?: Array<{
-      question_number?: number | null;
-      bounds?: NormalizedRect;
-      text_snippet?: string;
+    pages?: Array<{
+      page_number?: number;
+      question_regions?: Array<{
+        question_number?: number | null;
+        bounds?: NormalizedRect;
+        text_snippet?: string;
+      }>;
     }>;
   }>({
     apiKey,
     model,
     systemInstruction: QUESTION_SEGMENT_PROMPT,
-    parts: buildPageParts("questions", pageNumber, pageImageDataUrl, textSnippet),
+    parts: buildBatchParts("questions", pages),
     responseJsonSchema: QUESTION_SEGMENT_SCHEMA,
-    maxOutputTokens: 1400,
+    maxOutputTokens: Math.min(3600, 1200 + pages.length * 320),
     temperature: 0,
   });
 
-  return normalizeQuestionRegions(parsed.question_regions);
+  return normalizeQuestionPageResults(parsed.pages, pages);
 }
 
-async function segmentAnswerPage(
+async function segmentAnswerPages(
   apiKey: string,
   model: string,
-  pageNumber: number,
-  pageImageDataUrl: string,
-  textSnippet?: string
+  pages: SegmentRequestPayload["pages"]
 ) {
   const parsed = await generateGeminiJson<{
-    answer_anchors?: Array<{
-      question_number?: number | null;
-      bounds?: NormalizedRect;
-      text_snippet?: string;
-      segments?: NormalizedRect[];
+    pages?: Array<{
+      page_number?: number;
+      answer_anchors?: Array<{
+        question_number?: number | null;
+        bounds?: NormalizedRect;
+        text_snippet?: string;
+        segments?: NormalizedRect[];
+      }>;
     }>;
   }>({
     apiKey,
     model,
     systemInstruction: ANSWER_SEGMENT_PROMPT,
-    parts: buildPageParts("answers", pageNumber, pageImageDataUrl, textSnippet),
+    parts: buildBatchParts("answers", pages),
     responseJsonSchema: ANSWER_SEGMENT_SCHEMA,
-    maxOutputTokens: 1800,
+    maxOutputTokens: Math.min(4200, 1500 + pages.length * 360),
     temperature: 0,
   });
 
-  return normalizeAnswerAnchors(parsed.answer_anchors);
+  return normalizeAnswerPageResults(parsed.pages, pages);
 }
 
-function buildPageParts(
+function buildBatchParts(
   mode: "questions" | "answers",
-  pageNumber: number,
-  pageImageDataUrl: string,
-  textSnippet?: string
+  pages: SegmentRequestPayload["pages"]
 ): GeminiPart[] {
-  return [
+  const parts: GeminiPart[] = [
     {
-      text: [
-        `mode=${mode}`,
-        `page_number=${pageNumber}`,
-        `page_text_hint=${textSnippet || "none"}`,
-      ].join("\n"),
+      text: `mode=${mode}\npage_count=${pages.length}\nReturn one result object for every page_number exactly once.`,
     },
-    imagePartFromDataUrl(pageImageDataUrl),
   ];
+
+  for (const page of pages) {
+    parts.push({
+      text: [
+        `page_number=${page.pageNumber}`,
+        `page_text_hint=${page.textSnippet || "none"}`,
+      ].join("\n"),
+    });
+    parts.push(imagePartFromDataUrl(page.pageImageDataUrl));
+  }
+
+  return parts;
+}
+
+function normalizeQuestionPageResults(
+  value: unknown,
+  requestedPages: SegmentRequestPayload["pages"]
+) {
+  const pageMap = new Map<number, SegmentedQuestionRegion[]>(
+    requestedPages.map((page) => [page.pageNumber, []])
+  );
+
+  for (const item of Array.isArray(value) ? value : []) {
+    if (!item || typeof item !== "object") {
+      continue;
+    }
+
+    const candidate = item as {
+      page_number?: number;
+      question_regions?: unknown;
+    };
+    const pageNumber =
+      typeof candidate.page_number === "number" && Number.isFinite(candidate.page_number)
+        ? candidate.page_number
+        : null;
+
+    if (!pageNumber || !pageMap.has(pageNumber)) {
+      continue;
+    }
+
+    pageMap.set(pageNumber, normalizeQuestionRegions(candidate.question_regions));
+  }
+
+  return requestedPages.map((page) => ({
+    pageNumber: page.pageNumber,
+    questionRegions: pageMap.get(page.pageNumber) ?? [],
+  }));
+}
+
+function normalizeAnswerPageResults(
+  value: unknown,
+  requestedPages: SegmentRequestPayload["pages"]
+) {
+  const pageMap = new Map<number, SegmentedAnswerAnchor[]>(
+    requestedPages.map((page) => [page.pageNumber, []])
+  );
+
+  for (const item of Array.isArray(value) ? value : []) {
+    if (!item || typeof item !== "object") {
+      continue;
+    }
+
+    const candidate = item as {
+      page_number?: number;
+      answer_anchors?: unknown;
+    };
+    const pageNumber =
+      typeof candidate.page_number === "number" && Number.isFinite(candidate.page_number)
+        ? candidate.page_number
+        : null;
+
+    if (!pageNumber || !pageMap.has(pageNumber)) {
+      continue;
+    }
+
+    pageMap.set(pageNumber, normalizeAnswerAnchors(candidate.answer_anchors));
+  }
+
+  return requestedPages.map((page) => ({
+    pageNumber: page.pageNumber,
+    answerAnchors: pageMap.get(page.pageNumber) ?? [],
+  }));
 }
 
 function normalizeQuestionRegions(value: unknown) {
@@ -369,4 +470,8 @@ function clampNumber(value: unknown, min: number, max: number) {
   }
 
   return Math.min(max, Math.max(min, value));
+}
+
+function isQuotaError(message: string) {
+  return /RESOURCE_EXHAUSTED|quota/i.test(message);
 }

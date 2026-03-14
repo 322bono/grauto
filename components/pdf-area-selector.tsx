@@ -10,13 +10,15 @@ import type {
   PageNumberAnchor,
   SegmentRequestPayload,
   SegmentResponsePayload,
-  SelectedQuestionRegionPayload
+  SelectedQuestionRegionPayload,
 } from "@/lib/types";
 import {
   canvasToCompressedDataUrl,
   clonePdfBytes,
   cropCanvasToCompressedDataUrl,
-  extractPdfTextSnippets
+  extractPdfAnswerRegions,
+  extractPdfQuestionRegions,
+  extractPdfTextSnippets,
 } from "@/lib/pdf-utils";
 
 ensurePdfWorker();
@@ -37,6 +39,8 @@ interface PdfAreaSelectorProps {
   onPagesChange?: (pages: AnswerPagePayload[]) => void;
 }
 
+const SEGMENT_BATCH_SIZE = 8;
+
 export function PdfAreaSelector({
   title,
   helperText,
@@ -44,12 +48,14 @@ export function PdfAreaSelector({
   selectionMode,
   accentLabel,
   onRegionsChange,
-  onPagesChange
+  onPagesChange,
 }: PdfAreaSelectorProps) {
   const wrapperRef = useRef<HTMLDivElement | null>(null);
   const pageHostRefs = useRef<Record<number, HTMLDivElement | null>>({});
   const canvasRefs = useRef<Record<number, HTMLCanvasElement | null>>({});
   const selectedPagesRef = useRef<number[]>([]);
+  const localQuestionRegionsRef = useRef<Record<number, DetectedQuestionSlice[]> | null>(null);
+  const localAnswerAnchorsRef = useRef<Record<number, PageNumberAnchor[]> | null>(null);
 
   const [numPages, setNumPages] = useState(0);
   const [containerWidth, setContainerWidth] = useState(680);
@@ -89,6 +95,8 @@ export function PdfAreaSelector({
     setSegmentStatusByPage({});
     canvasRefs.current = {};
     pageHostRefs.current = {};
+    localQuestionRegionsRef.current = null;
+    localAnswerAnchorsRef.current = null;
 
     if (!file) {
       return;
@@ -112,14 +120,10 @@ export function PdfAreaSelector({
 
             if (!cancelled) {
               setTextSnippets(snippets);
-              setQuestionRegionsByPage({});
-              setAnswerAnchorsByPage({});
             }
           } catch {
             if (!cancelled) {
               setTextSnippets({});
-              setQuestionRegionsByPage({});
-              setAnswerAnchorsByPage({});
             }
           }
         })
@@ -127,8 +131,8 @@ export function PdfAreaSelector({
           if (!cancelled) {
             setLoadError(
               error instanceof Error
-                ? `PDF 파일을 읽지 못했습니다. ${error.message}`
-                : "PDF 파일을 읽지 못했습니다. 다른 파일로 다시 시도해 주세요."
+                ? `PDF 파일을 불러오지 못했습니다. ${error.message}`
+                : "PDF 파일을 불러오지 못했습니다. 다른 파일로 다시 시도해 주세요."
             );
           }
         });
@@ -147,86 +151,169 @@ export function PdfAreaSelector({
     return segmentStatusByPage[getSegmentStatusKey(pageNumber)] ?? "idle";
   }
 
-  async function requestSegmentation(pageNumber: number) {
-    const status = getSegmentStatus(pageNumber);
-    const canvas = canvasRefs.current[pageNumber];
-
-    if (!canvas || status === "loading" || status === "ready") {
-      return;
-    }
-
-    const pageImageDataUrl = canvasToCompressedDataUrl(canvas, {
-      maxWidth: 960,
-      mimeType: "image/jpeg",
-      quality: 0.78
-    });
-
-    if (!pageImageDataUrl) {
-      return;
-    }
-
+  function markPagesStatus(pageNumbers: number[], status: "loading" | "ready" | "error") {
     setSegmentStatusByPage((current) => ({
       ...current,
-      [getSegmentStatusKey(pageNumber)]: "loading"
+      ...Object.fromEntries(pageNumbers.map((pageNumber) => [getSegmentStatusKey(pageNumber), status])),
     }));
+  }
+
+  function applySegmentedPages(payload: SegmentResponsePayload) {
+    if (payload.mode === "questions") {
+      setQuestionRegionsByPage((current) => {
+        const next = { ...current };
+
+        for (const page of payload.pages) {
+          next[page.pageNumber] = (page.questionRegions ?? []).map((region) => ({
+            questionNumber: region.questionNumber ?? null,
+            bounds: region.bounds,
+            textSnippet: region.textSnippet ?? textSnippets[page.pageNumber] ?? "",
+          }));
+        }
+
+        return next;
+      });
+
+      return;
+    }
+
+    setAnswerAnchorsByPage((current) => {
+      const next = { ...current };
+
+      for (const page of payload.pages) {
+        next[page.pageNumber] = (page.answerAnchors ?? []).map((anchor) => ({
+          questionNumber: anchor.questionNumber ?? null,
+          bounds: anchor.bounds,
+          textSnippet: anchor.textSnippet ?? textSnippets[page.pageNumber] ?? "",
+          segments: anchor.segments ?? [anchor.bounds],
+        }));
+      }
+
+      return next;
+    });
+  }
+
+  async function applyLocalSegmentation(pageNumbers: number[]) {
+    if (!documentData || pageNumbers.length === 0) {
+      return false;
+    }
+
+    try {
+      if (selectionMode === "region") {
+        if (!localQuestionRegionsRef.current) {
+          localQuestionRegionsRef.current = await extractPdfQuestionRegions(clonePdfBytes(documentData));
+        }
+
+        const localPages = localQuestionRegionsRef.current;
+
+        setQuestionRegionsByPage((current) => {
+          const next = { ...current };
+
+          for (const pageNumber of pageNumbers) {
+            next[pageNumber] = localPages[pageNumber] ?? [];
+          }
+
+          return next;
+        });
+      } else {
+        if (!localAnswerAnchorsRef.current) {
+          localAnswerAnchorsRef.current = await extractPdfAnswerRegions(clonePdfBytes(documentData));
+        }
+
+        const localPages = localAnswerAnchorsRef.current;
+
+        setAnswerAnchorsByPage((current) => {
+          const next = { ...current };
+
+          for (const pageNumber of pageNumbers) {
+            next[pageNumber] = localPages[pageNumber] ?? [];
+          }
+
+          return next;
+        });
+      }
+
+      markPagesStatus(pageNumbers, "ready");
+      setLoadError("");
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async function requestSegmentationBatch(pageNumbers: number[]) {
+    const pendingPages: Array<SegmentRequestPayload["pages"][number] | null> = pageNumbers.map((pageNumber) => {
+        const canvas = canvasRefs.current[pageNumber];
+        const status = getSegmentStatus(pageNumber);
+
+        if (!canvas || status === "loading" || status === "ready") {
+          return null;
+        }
+
+        const pageImageDataUrl = canvasToCompressedDataUrl(canvas, {
+          maxWidth: 960,
+          mimeType: "image/jpeg",
+          quality: 0.78,
+        });
+
+        if (!pageImageDataUrl) {
+          return null;
+        }
+
+        return {
+          pageNumber,
+          pageImageDataUrl,
+          textSnippet: textSnippets[pageNumber] ?? "",
+        };
+      });
+
+    const pages = pendingPages
+      .filter((page): page is SegmentRequestPayload["pages"][number] => page !== null)
+      .slice(0, SEGMENT_BATCH_SIZE);
+
+    if (pages.length === 0) {
+      return;
+    }
+
+    markPagesStatus(
+      pages.map((page) => page.pageNumber),
+      "loading"
+    );
 
     try {
       const response = await fetch("/api/segment", {
         method: "POST",
         headers: {
-          "Content-Type": "application/json"
+          "Content-Type": "application/json",
         },
         body: JSON.stringify({
           mode: selectionMode === "region" ? "questions" : "answers",
-          pages: [
-            {
-              pageNumber,
-              pageImageDataUrl,
-              textSnippet: textSnippets[pageNumber] ?? ""
-            }
-          ]
-        } satisfies SegmentRequestPayload)
+          pages,
+        } satisfies SegmentRequestPayload),
       });
 
       if (!response.ok) {
-        throw new Error(await response.text());
+        throw new Error(`${response.status}:${await response.text()}`);
       }
 
       const payload = (await response.json()) as SegmentResponsePayload;
-      const segmentedPage = payload.pages.find((page) => page.pageNumber === pageNumber);
+      applySegmentedPages(payload);
+      markPagesStatus(
+        pages.map((page) => page.pageNumber),
+        "ready"
+      );
+      setLoadError("");
+    } catch (error) {
+      const restored = await applyLocalSegmentation(pages.map((page) => page.pageNumber));
 
-      if (selectionMode === "region") {
-        setQuestionRegionsByPage((current) => ({
-          ...current,
-          [pageNumber]:
-            (segmentedPage?.questionRegions ?? []).map((region) => ({
-              questionNumber: region.questionNumber ?? null,
-              bounds: region.bounds,
-              textSnippet: region.textSnippet ?? textSnippets[pageNumber] ?? ""
-            })) ?? []
-        }));
-      } else {
-        setAnswerAnchorsByPage((current) => ({
-          ...current,
-          [pageNumber]:
-            (segmentedPage?.answerAnchors ?? []).map((anchor) => ({
-              questionNumber: anchor.questionNumber ?? null,
-              bounds: anchor.bounds,
-              textSnippet: anchor.textSnippet ?? textSnippets[pageNumber] ?? "",
-              segments: anchor.segments ?? [anchor.bounds]
-            })) ?? []
-        }));
+      if (restored) {
+        return;
       }
 
-      setSegmentStatusByPage((current) => ({
-        ...current,
-        [getSegmentStatusKey(pageNumber)]: "ready"
-      }));
-    } catch (error) {
-      setSegmentStatusByPage((current) => ({
-        ...current,
-        [getSegmentStatusKey(pageNumber)]: "error"
-      }));
+      markPagesStatus(
+        pages.map((page) => page.pageNumber),
+        "error"
+      );
       setLoadError(
         error instanceof Error
           ? `AI 분리에 실패했습니다. ${error.message}`
@@ -236,10 +323,24 @@ export function PdfAreaSelector({
   }
 
   useEffect(() => {
-    selectedPages.forEach((pageNumber) => {
-      void requestSegmentation(pageNumber);
+    const hasLoadingPage = selectedPages.some((pageNumber) => getSegmentStatus(pageNumber) === "loading");
+
+    if (hasLoadingPage) {
+      return;
+    }
+
+    const pendingPages = selectedPages.filter((pageNumber) => {
+      const canvas = canvasRefs.current[pageNumber];
+      const status = getSegmentStatus(pageNumber);
+      return Boolean(canvas) && status !== "loading" && status !== "ready";
     });
-  }, [selectedPages, selectionMode, textSnippets]);
+
+    if (pendingPages.length === 0) {
+      return;
+    }
+
+    void requestSegmentationBatch(pendingPages);
+  }, [selectedPages, selectionMode, segmentStatusByPage, textSnippets]);
 
   const selectedQuestionCount = useMemo(
     () =>
@@ -261,46 +362,8 @@ export function PdfAreaSelector({
     }
 
     let cancelled = false;
-    const quickRegions = [...selectedPages]
-      .sort((a, b) => a - b)
-      .flatMap((pageNumber) => {
-        const canvas = canvasRefs.current[pageNumber];
-        const regionSlices = questionRegionsByPage[pageNumber] ?? [];
 
-        return regionSlices.flatMap((region, regionIndex) => {
-          const snapshotDataUrl = canvas
-            ? cropCanvasToCompressedDataUrl(canvas, region.bounds, {
-                maxWidth: 420,
-                mimeType: "image/jpeg",
-                quality: 0.76
-              })
-            : PLACEHOLDER_IMAGE_DATA_URL;
-
-          if (!snapshotDataUrl) {
-            return [];
-          }
-
-          return [
-            {
-              id: `question-page-${pageNumber}-${region.questionNumber ?? regionIndex + 1}-${regionIndex}`,
-              pageNumber,
-              displayOrder: 0,
-              bounds: region.bounds,
-              snapshotDataUrl,
-              analysisDataUrl: snapshotDataUrl,
-              extractedTextSnippet: region.textSnippet || textSnippets[pageNumber] || "",
-              questionNumberHint: region.questionNumber
-            }
-          ];
-        });
-      });
-
-    onRegionsChange(
-      quickRegions.map((region, index) => ({
-        ...region,
-        displayOrder: index + 1
-      }))
-    );
+    onRegionsChange(buildQuickRegions(selectedPages));
 
     startTransition(() => {
       (async () => {
@@ -325,26 +388,20 @@ export function PdfAreaSelector({
 
             await page.render({ canvasContext: context, viewport }).promise;
 
-            const regionSlices = questionRegionsByPage[pageNumber] ?? [];
-
-            if (regionSlices.length === 0) {
-              continue;
-            }
-
-            regionSlices.forEach((region, regionIndex) => {
+            for (const [regionIndex, region] of (questionRegionsByPage[pageNumber] ?? []).entries()) {
               const snapshotDataUrl = cropCanvasToCompressedDataUrl(renderCanvas, region.bounds, {
                 maxWidth: 900,
                 mimeType: "image/jpeg",
-                quality: 0.9
+                quality: 0.9,
               });
               const analysisDataUrl = cropCanvasToCompressedDataUrl(renderCanvas, region.bounds, {
                 maxWidth: 520,
                 mimeType: "image/jpeg",
-                quality: 0.74
+                quality: 0.74,
               });
 
               if (!snapshotDataUrl) {
-                return;
+                continue;
               }
 
               nextRegions.push({
@@ -355,16 +412,16 @@ export function PdfAreaSelector({
                 snapshotDataUrl,
                 analysisDataUrl: analysisDataUrl || snapshotDataUrl,
                 extractedTextSnippet: region.textSnippet || textSnippets[pageNumber] || "",
-                questionNumberHint: region.questionNumber
+                questionNumberHint: region.questionNumber,
               });
-            });
+            }
           }
 
           if (!cancelled) {
             onRegionsChange(
               nextRegions.map((region, index) => ({
                 ...region,
-                displayOrder: index + 1
+                displayOrder: index + 1,
               }))
             );
           }
@@ -372,9 +429,7 @@ export function PdfAreaSelector({
           void pdfDocument.destroy();
         }
       })().catch(() => {
-        if (!cancelled) {
-          return;
-        }
+        // Keep the quick selection when high-resolution regeneration fails.
       });
     });
 
@@ -394,34 +449,8 @@ export function PdfAreaSelector({
     }
 
     let cancelled = false;
-    const quickPages = [...selectedPages]
-      .sort((a, b) => a - b)
-      .flatMap((pageNumber) => {
-        const canvas = canvasRefs.current[pageNumber];
-        const pageImageDataUrl = canvas
-          ? canvasToCompressedDataUrl(canvas, {
-              maxWidth: 380,
-              mimeType: "image/jpeg",
-              quality: 0.76
-            })
-          : PLACEHOLDER_IMAGE_DATA_URL;
 
-        if (!pageImageDataUrl) {
-          return [];
-        }
-
-        return [
-          {
-            id: `answer-${pageNumber}`,
-            pageNumber,
-            pageImageDataUrl,
-            analysisImageDataUrl: pageImageDataUrl,
-            extractedTextSnippet: textSnippets[pageNumber] ?? ""
-          }
-        ];
-      });
-
-    onPagesChange(quickPages);
+    onPagesChange(buildQuickPages(selectedPages));
 
     startTransition(() => {
       (async () => {
@@ -449,12 +478,12 @@ export function PdfAreaSelector({
             const pageImageDataUrl = canvasToCompressedDataUrl(renderCanvas, {
               maxWidth: 1280,
               mimeType: "image/jpeg",
-              quality: 0.9
+              quality: 0.9,
             });
             const analysisImageDataUrl = canvasToCompressedDataUrl(renderCanvas, {
               maxWidth: 640,
               mimeType: "image/jpeg",
-              quality: 0.72
+              quality: 0.72,
             });
 
             if (!pageImageDataUrl) {
@@ -467,7 +496,7 @@ export function PdfAreaSelector({
               pageImageDataUrl,
               analysisImageDataUrl: analysisImageDataUrl || pageImageDataUrl,
               extractedTextSnippet: textSnippets[pageNumber] ?? "",
-              answerAnchors: answerAnchorsByPage[pageNumber] ?? []
+              answerAnchors: answerAnchorsByPage[pageNumber] ?? [],
             });
           }
 
@@ -478,9 +507,7 @@ export function PdfAreaSelector({
           void pdfDocument.destroy();
         }
       })().catch(() => {
-        if (!cancelled) {
-          return;
-        }
+        // Keep the quick selection when high-resolution regeneration fails.
       });
     });
 
@@ -525,7 +552,7 @@ export function PdfAreaSelector({
             ? cropCanvasToCompressedDataUrl(canvas, region.bounds, {
                 maxWidth: 420,
                 mimeType: "image/jpeg",
-                quality: 0.76
+                quality: 0.76,
               })
             : PLACEHOLDER_IMAGE_DATA_URL;
 
@@ -542,14 +569,14 @@ export function PdfAreaSelector({
               snapshotDataUrl,
               analysisDataUrl: snapshotDataUrl,
               extractedTextSnippet: region.textSnippet || textSnippets[pageNumber] || "",
-              questionNumberHint: region.questionNumber
-            } satisfies SelectedQuestionRegionPayload
+              questionNumberHint: region.questionNumber,
+            } satisfies SelectedQuestionRegionPayload,
           ];
         });
       })
       .map((region, index) => ({
         ...region,
-        displayOrder: index + 1
+        displayOrder: index + 1,
       }));
   }
 
@@ -562,7 +589,7 @@ export function PdfAreaSelector({
           ? canvasToCompressedDataUrl(canvas, {
               maxWidth: 380,
               mimeType: "image/jpeg",
-              quality: 0.76
+              quality: 0.76,
             })
           : PLACEHOLDER_IMAGE_DATA_URL;
 
@@ -577,8 +604,8 @@ export function PdfAreaSelector({
             pageImageDataUrl,
             analysisImageDataUrl: pageImageDataUrl,
             extractedTextSnippet: textSnippets[pageNumber] ?? "",
-            answerAnchors: answerAnchorsByPage[pageNumber] ?? []
-          } satisfies AnswerPagePayload
+            answerAnchors: answerAnchorsByPage[pageNumber] ?? [],
+          } satisfies AnswerPagePayload,
         ];
       });
   }
@@ -622,16 +649,34 @@ export function PdfAreaSelector({
     const host = pageHostRefs.current[pageNumber];
     const canvas = host?.querySelector("canvas") ?? null;
 
-    if (canvas instanceof HTMLCanvasElement) {
-      canvasRefs.current[pageNumber] = canvas;
-      const current = selectedPagesRef.current;
-
-      if (current.includes(pageNumber)) {
-        void requestSegmentation(pageNumber);
-        emitQuickSelection(current);
-        setSelectedPages([...current]);
-      }
+    if (!(canvas instanceof HTMLCanvasElement)) {
+      return;
     }
+
+    canvasRefs.current[pageNumber] = canvas;
+
+    if (selectedPagesRef.current.includes(pageNumber)) {
+      setSelectedPages([...selectedPagesRef.current]);
+      emitQuickSelection(selectedPagesRef.current);
+    }
+  }
+
+  function getPageStatusLabel(pageNumber: number) {
+    const status = getSegmentStatus(pageNumber);
+
+    if (status === "loading") {
+      return "분리 중";
+    }
+
+    if (status === "ready") {
+      return selectionMode === "region" ? "문제" : "답안";
+    }
+
+    if (status === "error") {
+      return "재시도";
+    }
+
+    return "선택";
   }
 
   return (
@@ -645,7 +690,7 @@ export function PdfAreaSelector({
       </div>
 
       {!file ? (
-        <div className="empty">PDF를 업로드하면 여기에서 페이지 미리보기와 선택 버튼이 표시됩니다.</div>
+        <div className="empty">PDF를 업로드하면 여기에서 페이지를 고를 수 있습니다.</div>
       ) : loadError ? (
         <div className="empty">{loadError}</div>
       ) : (
@@ -653,12 +698,14 @@ export function PdfAreaSelector({
           <div className="selector-toolbar">
             <div className="button-row">
               <span className="status ok">
-                {selectionMode === "region" ? `선택된 문제 문항 ${selectedQuestionCount}개` : `선택한 답안 페이지 ${selectedPages.length}개`}
+                {selectionMode === "region"
+                  ? `현재 선택한 문제 문항: ${selectedQuestionCount}개`
+                  : `현재 선택한 답안 페이지: ${selectedPages.length}개`}
               </span>
               <span className="subtle">
                 {selectionMode === "region"
-                  ? "페이지를 누르면 그 안의 문항을 자동으로 잘라서 사용합니다."
-                  : "정답과 해설이 있는 페이지를 눌러 빠르게 골라 주세요."}
+                  ? "문제 페이지를 누르면 해당 페이지 안 문항을 자동으로 분리합니다."
+                  : "정답과 해설이 있는 페이지를 골라 주세요."}
               </span>
             </div>
 
@@ -711,9 +758,7 @@ export function PdfAreaSelector({
                   >
                     <div className="page-header">
                       <strong>{pageNumber}페이지</strong>
-                      <span className={`status ${isSelectedPage ? "ok" : "warn"}`}>
-                        {selectionMode === "region" ? (isSelectedPage ? "문제" : "선택") : isSelectedPage ? "답안" : "선택"}
-                      </span>
+                      <span className={`status ${isSelectedPage ? "ok" : "warn"}`}>{getPageStatusLabel(pageNumber)}</span>
                     </div>
 
                     <div
@@ -734,11 +779,11 @@ export function PdfAreaSelector({
 
                     <div className="page-card-footer">
                       <span className="subtle line-clamp-2">
-                        {textSnippets[pageNumber] ? textSnippets[pageNumber] : "텍스트가 적은 스캔 PDF면 썸네일을 보고 선택해 주세요."}
+                        {textSnippets[pageNumber] ? textSnippets[pageNumber] : "텍스트가 적은 스캔 PDF입니다. 미리보기를 보고 선택해 주세요."}
                       </span>
                       {selectionMode === "region" ? (
                         <span className="subtle" style={{ display: "block", marginTop: 8 }}>
-                          감지 문항 {detectedQuestionCount > 0 ? detectedQuestionCount : "자동 분리 준비 중"}
+                          감지 문항 {detectedQuestionCount > 0 ? detectedQuestionCount : "분리 대기 중"}
                         </span>
                       ) : null}
                     </div>
