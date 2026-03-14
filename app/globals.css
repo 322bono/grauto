@@ -1958,6 +1958,193 @@ img {
   background: rgba(12, 14, 19, 0.98);
 }
 
+.grading-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(6, 9, 13, 0.42);
+  backdrop-filter: blur(18px);
+}
+
+.grading-overlay-card {
+  width: min(720px, 100%);
+  display: grid;
+  gap: 18px;
+  padding: 28px;
+  border-radius: 30px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background:
+    radial-gradient(circle at top left, rgba(255, 112, 67, 0.12), transparent 30%),
+    radial-gradient(circle at top right, rgba(17, 167, 139, 0.1), transparent 28%),
+    rgba(17, 20, 25, 0.96);
+  box-shadow: 0 28px 70px rgba(0, 0, 0, 0.38);
+}
+
+.grading-overlay-kicker {
+  display: inline-flex;
+  width: fit-content;
+  padding: 7px 12px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: rgba(245, 243, 239, 0.72);
+  font-size: 0.82rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.grading-overlay-title {
+  margin: 0;
+  font-size: clamp(2rem, 3vw, 3rem);
+  line-height: 0.95;
+  letter-spacing: -0.03em;
+  color: #f8f5ef;
+}
+
+.grading-overlay-copy {
+  margin: 0;
+  color: rgba(245, 243, 239, 0.76);
+  line-height: 1.7;
+  font-size: 1rem;
+}
+
+.grading-progress-shell {
+  display: grid;
+  gap: 10px;
+}
+
+.grading-progress-bar {
+  position: relative;
+  height: 14px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.grading-progress-bar span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #ff7f57, #13b394);
+  box-shadow: 0 0 24px rgba(255, 112, 67, 0.3);
+  transition: width 420ms ease;
+}
+
+.grading-progress-shell strong {
+  justify-self: end;
+  font-size: 1rem;
+  color: #f7f3eb;
+}
+
+.grading-current-step {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.grading-current-step-index {
+  display: inline-flex;
+  align-items: center;
+  min-height: 34px;
+  padding: 0 12px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: rgba(245, 243, 239, 0.8);
+  font-size: 0.92rem;
+  font-weight: 700;
+}
+
+.grading-current-step strong {
+  font-size: 1.2rem;
+  color: #f8f5ef;
+}
+
+.grading-step-list {
+  display: grid;
+  gap: 10px;
+}
+
+.grading-step-chip {
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+  padding: 13px 14px;
+  border-radius: 20px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.grading-step-chip span {
+  display: inline-grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(245, 243, 239, 0.88);
+  font-weight: 800;
+}
+
+.grading-step-chip strong {
+  display: block;
+  margin-bottom: 4px;
+  color: #f7f4ee;
+}
+
+.grading-step-chip small {
+  display: block;
+  color: rgba(245, 243, 239, 0.66);
+  line-height: 1.55;
+}
+
+.grading-step-chip.active {
+  border-color: rgba(255, 112, 67, 0.34);
+  background: rgba(255, 112, 67, 0.08);
+}
+
+.grading-step-chip.active span {
+  background: linear-gradient(135deg, #ff7f57, #ff9b63);
+  color: #fff;
+}
+
+.grading-step-chip.done {
+  border-color: rgba(17, 167, 139, 0.24);
+  background: rgba(17, 167, 139, 0.08);
+}
+
+.grading-step-chip.done span {
+  background: linear-gradient(135deg, #11a78b, #1fbe9c);
+  color: #fff;
+}
+
+.grading-overlay-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.grading-overlay-meta span {
+  display: inline-flex;
+  align-items: center;
+  min-height: 36px;
+  padding: 0 12px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: rgba(245, 243, 239, 0.78);
+  font-size: 0.92rem;
+  font-weight: 600;
+}
+
 .empty {
   padding: 18px;
   border-radius: 16px;

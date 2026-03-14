@@ -28,6 +28,11 @@ import type {
 
 type AppStage = "landing" | "workspace";
 type WorkspaceStep = "metadata" | "questions" | "answers" | "grade" | "results";
+type GradingProgressStep = {
+  id: string;
+  label: string;
+  detail: string;
+};
 
 const WORKSPACE_STEPS: Array<{ id: WorkspaceStep; label: string }> = [
   { id: "metadata", label: "시험 정보" },
@@ -35,6 +40,34 @@ const WORKSPACE_STEPS: Array<{ id: WorkspaceStep; label: string }> = [
   { id: "answers", label: "답안 페이지" },
   { id: "grade", label: "채점 실행" },
   { id: "results", label: "결과 보기" }
+];
+
+const GRADE_PROGRESS_STEPS: GradingProgressStep[] = [
+  {
+    id: "prepare",
+    label: "자료 정리 중",
+    detail: "선택한 문제와 답안 페이지를 채점용 형식으로 정리하고 있어요."
+  },
+  {
+    id: "match",
+    label: "문항 매칭 중",
+    detail: "문제 번호와 답지 페이지를 비교해서 알맞은 위치를 찾고 있어요."
+  },
+  {
+    id: "grade",
+    label: "자동 채점 중",
+    detail: "학생 답과 정답을 비교하며 문항별 정오를 판정하고 있어요."
+  },
+  {
+    id: "feedback",
+    label: "해설 정리 중",
+    detail: "결과 화면에 들어갈 해설과 복습 포인트를 정리하고 있어요."
+  },
+  {
+    id: "save",
+    label: "결과 저장 중",
+    detail: "채점 결과를 화면과 기록에 안전하게 반영하고 있어요."
+  }
 ];
 
 function getTodayLocalDate() {
@@ -71,10 +104,14 @@ export function AutoGraderApp() {
   const [authUser, setAuthUser] = useState<AuthUserProfile | null>(null);
   const [isSigningIn, setIsSigningIn] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
+  const [gradingProgressIndex, setGradingProgressIndex] = useState(0);
+  const [gradingElapsedSeconds, setGradingElapsedSeconds] = useState(0);
 
   const effectiveAnswerFile = uploadMode === "single" ? questionFile : answerFile;
   const uploadReady = Boolean(questionFile && effectiveAnswerFile);
   const currentStepIndex = WORKSPACE_STEPS.findIndex((step) => step.id === workspaceStep);
+  const currentGradingStep = GRADE_PROGRESS_STEPS[Math.min(gradingProgressIndex, GRADE_PROGRESS_STEPS.length - 1)];
+  const gradingProgressPercent = Math.round(((Math.min(gradingProgressIndex, GRADE_PROGRESS_STEPS.length - 1) + 1) / GRADE_PROGRESS_STEPS.length) * 100);
 
   const selectionSummary = useMemo(
     () => ({
@@ -108,6 +145,25 @@ export function AutoGraderApp() {
       window.scrollTo({ top: 0, behavior: "smooth" });
     }
   }, [stage, workspaceStep]);
+
+  useEffect(() => {
+    if (!isSubmitting) {
+      setGradingElapsedSeconds(0);
+      return;
+    }
+
+    const stepTimer = window.setInterval(() => {
+      setGradingProgressIndex((current) => Math.min(current + 1, GRADE_PROGRESS_STEPS.length - 2));
+    }, 1800);
+    const elapsedTimer = window.setInterval(() => {
+      setGradingElapsedSeconds((current) => current + 1);
+    }, 1000);
+
+    return () => {
+      window.clearInterval(stepTimer);
+      window.clearInterval(elapsedTimer);
+    };
+  }, [isSubmitting]);
 
   async function handleSignIn() {
     setIsSigningIn(true);
@@ -196,6 +252,8 @@ export function AutoGraderApp() {
       return;
     }
 
+    setGradingProgressIndex(0);
+    setGradingElapsedSeconds(0);
     setIsSubmitting(true);
 
     const payload: GradeRequestPayload = {
@@ -220,6 +278,7 @@ export function AutoGraderApp() {
     }
 
     try {
+      setGradingProgressIndex(1);
       const response = await fetch("/api/grade", {
         method: "POST",
         headers: {
@@ -232,6 +291,7 @@ export function AutoGraderApp() {
         throw new Error(await response.text());
       }
 
+      setGradingProgressIndex(3);
       const nextResult = (await response.json()) as GradeResponsePayload;
       const createdAt = new Date().toISOString();
       const recordId = crypto.randomUUID();
@@ -251,6 +311,7 @@ export function AutoGraderApp() {
       setCurrentRecordCreatedAt(createdAt);
       setCurrentCloudSync(undefined);
       setResult(nextResult);
+      setGradingProgressIndex(4);
 
       await persistLocalRecord(nextRecord);
 
@@ -457,6 +518,17 @@ export function AutoGraderApp() {
 
   return (
     <main className={`shell landing-shell ${stage === "landing" ? "app-locked" : ""}`}>
+      {isSubmitting ? (
+        <GradingProgressOverlay
+          currentStep={currentGradingStep}
+          progressPercent={gradingProgressPercent}
+          progressIndex={gradingProgressIndex}
+          elapsedSeconds={gradingElapsedSeconds}
+          questionCount={selectionSummary.questionCount}
+          answerCount={selectionSummary.answerCount}
+        />
+      ) : null}
+
       <div className="landing-header">
         <button
           type="button"
@@ -776,6 +848,68 @@ export function AutoGraderApp() {
         </>
       )}
     </main>
+  );
+}
+
+function GradingProgressOverlay({
+  currentStep,
+  progressPercent,
+  progressIndex,
+  elapsedSeconds,
+  questionCount,
+  answerCount
+}: {
+  currentStep: GradingProgressStep;
+  progressPercent: number;
+  progressIndex: number;
+  elapsedSeconds: number;
+  questionCount: number;
+  answerCount: number;
+}) {
+  return (
+    <div className="grading-overlay" aria-live="polite" aria-busy="true">
+      <div className="grading-overlay-card">
+        <span className="grading-overlay-kicker">Grauto</span>
+        <h2 className="grading-overlay-title">채점 진행 중</h2>
+        <p className="grading-overlay-copy">{currentStep.detail}</p>
+
+        <div className="grading-progress-shell" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progressPercent}>
+          <div className="grading-progress-bar">
+            <span style={{ width: `${progressPercent}%` }} />
+          </div>
+          <strong>{progressPercent}%</strong>
+        </div>
+
+        <div className="grading-current-step">
+          <span className="grading-current-step-index">
+            {Math.min(progressIndex + 1, GRADE_PROGRESS_STEPS.length)} / {GRADE_PROGRESS_STEPS.length}
+          </span>
+          <strong>{currentStep.label}</strong>
+        </div>
+
+        <div className="grading-step-list">
+          {GRADE_PROGRESS_STEPS.map((step, index) => {
+            const state = index < progressIndex ? "done" : index === progressIndex ? "active" : "idle";
+
+            return (
+              <div key={step.id} className={`grading-step-chip ${state}`}>
+                <span>{index + 1}</span>
+                <div>
+                  <strong>{step.label}</strong>
+                  <small>{step.detail}</small>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        <div className="grading-overlay-meta">
+          <span>문제 {questionCount}개</span>
+          <span>답안 페이지 {answerCount}개</span>
+          <span>{elapsedSeconds}초 경과</span>
+        </div>
+      </div>
+    </div>
   );
 }
 
