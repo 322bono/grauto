@@ -519,7 +519,9 @@ export function AutoGraderApp() {
   }
 
   return (
-    <main className={`shell landing-shell ${stage === "landing" && !selectedMode ? "app-locked" : ""}`}>
+    <main
+      className={`shell landing-shell ${stage === "landing" ? "landing-active" : ""} ${stage === "landing" && !selectedMode ? "app-locked" : ""}`}
+    >
       {isSubmitting ? (
         <GradingProgressOverlay
           currentStep={currentGradingStep}
