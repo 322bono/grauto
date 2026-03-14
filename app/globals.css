@@ -450,19 +450,37 @@ img {
   opacity: 0.96;
 }
 
+.menu-foot-actions {
+  display: grid;
+  width: 100%;
+  justify-items: stretch;
+  gap: 8px;
+}
+
 .drawer-logout-button {
-  display: inline-flex;
+  display: flex;
   align-items: center;
-  justify-content: center;
-  width: fit-content;
-  min-height: 52px;
-  padding: 0 20px;
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  border-radius: 18px;
-  background: rgba(255, 255, 255, 0.06);
-  color: var(--landing-ink);
-  font-size: 1rem;
+  justify-content: flex-start;
+  width: 100%;
+  min-height: 0;
+  padding: 12px 0 10px;
+  border: none;
+  border-radius: 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  background: transparent;
+  color: rgba(245, 242, 236, 0.9);
+  font-size: 1.02rem;
   font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.drawer-version {
+  justify-self: end;
+  color: rgba(245, 242, 236, 0.56);
+  font-size: 0.72rem;
+  line-height: 1;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 
 .intro-stage {
@@ -494,6 +512,12 @@ img {
   border: none;
   border-radius: 0;
   box-shadow: none;
+}
+
+.sketch-intro.with-upload {
+  align-content: start;
+  min-height: auto;
+  padding-bottom: 80px;
 }
 
 .sketch-intro::after {
@@ -534,6 +558,8 @@ img {
   line-height: 1.14;
   letter-spacing: -0.03em;
   white-space: nowrap;
+  opacity: 0;
+  animation: landing-fade-up 760ms cubic-bezier(0.2, 0.8, 0.2, 1) 120ms forwards;
 }
 
 .sketch-title-line {
@@ -553,6 +579,8 @@ img {
   font-size: clamp(3.4rem, 6vw, 5rem);
   line-height: 0.9;
   letter-spacing: -0.04em;
+  opacity: 0;
+  animation: landing-fade-up 700ms cubic-bezier(0.2, 0.8, 0.2, 1) 820ms forwards;
 }
 
 .landing-description {
@@ -569,6 +597,8 @@ img {
   gap: 28px;
   align-items: start;
   margin-top: 46px;
+  opacity: 0;
+  animation: landing-fade-up 680ms cubic-bezier(0.2, 0.8, 0.2, 1) 1460ms forwards;
 }
 
 .sketch-choice {
@@ -1472,6 +1502,20 @@ img {
   100% {
     opacity: 1;
     transform: translateY(0) scale(1);
+    filter: blur(0);
+  }
+}
+
+@keyframes landing-fade-up {
+  0% {
+    opacity: 0;
+    transform: translateY(26px);
+    filter: blur(8px);
+  }
+
+  100% {
+    opacity: 1;
+    transform: translateY(0);
     filter: blur(0);
   }
 }
@@ -2726,6 +2770,13 @@ img {
     gap: 22px;
   }
 
+  .sketch-intro.with-upload {
+    min-height: auto;
+    justify-content: start;
+    align-content: start;
+    padding: 92px 14px 32px;
+  }
+
   .sketch-copy {
     margin-top: 0;
     gap: 6px;
@@ -3067,6 +3118,10 @@ img {
   .menu-drawer {
     width: calc(100vw - 8px);
     padding: 18px 16px 16px;
+  }
+
+  .sketch-intro.with-upload {
+    padding: 82px 10px 28px;
   }
 
   .landing-corner-wordmark {

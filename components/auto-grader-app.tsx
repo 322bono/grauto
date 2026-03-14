@@ -70,6 +70,8 @@ const GRADE_PROGRESS_STEPS: GradingProgressStep[] = [
   }
 ];
 
+const APP_VERSION = "v0.1.0";
+
 function getTodayLocalDate() {
   const now = new Date();
   const offset = now.getTimezoneOffset() * 60_000;
@@ -517,7 +519,7 @@ export function AutoGraderApp() {
   }
 
   return (
-    <main className={`shell landing-shell ${stage === "landing" ? "app-locked" : ""}`}>
+    <main className={`shell landing-shell ${stage === "landing" && !selectedMode ? "app-locked" : ""}`}>
       {isSubmitting ? (
         <GradingProgressOverlay
           currentStep={currentGradingStep}
@@ -583,15 +585,18 @@ export function AutoGraderApp() {
         <div className="menu-drawer-foot">
           <span className="menu-foot-wordmark">Grauto</span>
           {authUser ? (
-            <button type="button" className="drawer-logout-button" onClick={handleSignOut}>
-              로그아웃
-            </button>
+            <div className="menu-foot-actions">
+              <button type="button" className="drawer-logout-button" onClick={handleSignOut}>
+                로그아웃
+              </button>
+              <span className="drawer-version">{APP_VERSION}</span>
+            </div>
           ) : null}
         </div>
       </aside>
 
       {stage === "landing" ? (
-        <section className="intro-stage sketch-intro">
+        <section className={`intro-stage sketch-intro ${selectedMode ? "with-upload" : ""}`}>
           <div className="sketch-copy">
             <h1 className="sketch-title">
               <span className="sketch-title-line">
