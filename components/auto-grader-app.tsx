@@ -70,7 +70,7 @@ const GRADE_PROGRESS_STEPS: GradingProgressStep[] = [
   }
 ];
 
-const APP_VERSION = "Beta v0.3.0";
+const APP_VERSION = "Beta v0.3.1";
 
 function getTodayLocalDate() {
   const now = new Date();

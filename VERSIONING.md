@@ -1,7 +1,7 @@
 # Grauto Versioning
 
-- Current label: `Beta v0.3.0`
-- Minor/simple changes: increase by `0.1`
-  - Example: `v0.3.0 -> v0.4.0`
-- Major/large feature changes: increase the front major number
-  - Example: `v0.x -> v1.0`
+- Current label: `Beta v0.3.1`
+- Each small change: increase by `0.0.1`
+  - Example: `v0.3.0 -> v0.3.1`
+- Significant change / new feature: increase by `0.1.0`, reset patch
+  - Example: `v0.3.7 -> v0.4.0`
