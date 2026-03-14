@@ -5,18 +5,44 @@ import { Readable } from "node:stream";
 
 let configured = false;
 
+function isClearlyInvalidCloudName(value: string) {
+  return value.toLowerCase() === "root" || /\s/.test(value) || value.includes("/") || value.includes("\\") || value.startsWith("http");
+}
+
 function ensureCloudinary() {
   if (configured) {
     return cloudinary;
   }
 
-  const cloudName = process.env.CLOUDINARY_CLOUD_NAME;
-  const apiKey = process.env.CLOUDINARY_API_KEY;
-  const apiSecret = process.env.CLOUDINARY_API_SECRET;
+  const cloudinaryUrl = process.env.CLOUDINARY_URL?.trim();
+  const cloudName = process.env.CLOUDINARY_CLOUD_NAME?.trim();
+  const apiKey = process.env.CLOUDINARY_API_KEY?.trim();
+  const apiSecret = process.env.CLOUDINARY_API_SECRET?.trim();
+
+  if (cloudinaryUrl) {
+    cloudinary.config(cloudinaryUrl);
+
+    const configuredCloudName = String(cloudinary.config().cloud_name ?? "").trim();
+
+    if (!configuredCloudName || isClearlyInvalidCloudName(configuredCloudName)) {
+      throw new Error(
+        "Cloudinary 설정이 잘못되었습니다. CLOUDINARY_URL에는 cloudinary://API_KEY:API_SECRET@CLOUD_NAME 형식만 넣어 주세요."
+      );
+    }
+
+    configured = true;
+    return cloudinary;
+  }
 
   if (!cloudName || !apiKey || !apiSecret) {
     throw new Error(
-      "Cloudinary 환경 변수가 비어 있습니다. CLOUDINARY_CLOUD_NAME / CLOUDINARY_API_KEY / CLOUDINARY_API_SECRET를 설정해 주세요."
+      "Cloudinary 환경 변수가 비어 있습니다. CLOUDINARY_URL 또는 CLOUDINARY_CLOUD_NAME / CLOUDINARY_API_KEY / CLOUDINARY_API_SECRET를 설정해 주세요."
+    );
+  }
+
+  if (isClearlyInvalidCloudName(cloudName)) {
+    throw new Error(
+      "CLOUDINARY_CLOUD_NAME 값이 잘못되었습니다. 'Root' 같은 폴더명이 아니라 Cloudinary Dashboard에 보이는 실제 Cloud name만 넣어 주세요."
     );
   }
 
