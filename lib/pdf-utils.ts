@@ -386,7 +386,7 @@ function toPositionedFragments(item: unknown, viewportWidth: number, viewportHei
 
 function buildQuestionRegionsFromFragments(fragments: PositionedTextFragment[]) {
   const anchors = detectQuestionAnchors(fragments);
-  const dedupedAnchors = dedupeQuestionAnchors(anchors);
+  const dedupedAnchors = keepUniqueQuestionAnchors(dedupeQuestionAnchors(anchors));
 
   if (dedupedAnchors.length === 0) {
     return [] as DetectedQuestionRegion[];
@@ -435,7 +435,7 @@ function buildQuestionRegionsFromFragments(fragments: PositionedTextFragment[]) 
 }
 
 function buildAnswerRegionsFromFragments(fragments: PositionedTextFragment[]) {
-  const anchors = dedupeQuestionAnchors(detectQuestionAnchors(fragments));
+  const anchors = keepUniqueQuestionAnchors(dedupeQuestionAnchors(detectQuestionAnchors(fragments)));
 
   if (anchors.length === 0) {
     return [] as PageNumberAnchor[];
@@ -495,7 +495,8 @@ function detectQuestionAnchors(fragments: PositionedTextFragment[]) {
         anchor.questionNumber !== null &&
         anchor.top >= 0.04 &&
         anchor.top <= 0.965 &&
-        !isHeaderLikeAnchor(anchor)
+        !isHeaderLikeAnchor(anchor) &&
+        !isChoiceLikeAnchor(anchor)
     )
     .sort((left, right) => left.top - right.top || left.left - right.left);
 }
@@ -516,6 +517,19 @@ function dedupeQuestionAnchors(anchors: QuestionAnchorCandidate[]) {
     current.push({ ...anchor });
     return current;
   }, []);
+}
+
+function keepUniqueQuestionAnchors(anchors: Array<{ questionNumber: number; left: number; top: number }>) {
+  const seen = new Set<number>();
+
+  return anchors.filter((anchor) => {
+    if (seen.has(anchor.questionNumber)) {
+      return false;
+    }
+
+    seen.add(anchor.questionNumber);
+    return true;
+  });
 }
 
 function inferColumnBands(anchors: Array<{ questionNumber: number; left: number; top: number }>) {
@@ -606,6 +620,25 @@ function isHeaderLikeAnchor(anchor: { questionNumber: number | null; text: strin
   return false;
 }
 
+function isChoiceLikeAnchor(anchor: { questionNumber: number | null; text: string; left: number; top: number; lineText: string }) {
+  const choiceMarkerCount = countChoiceMarkers(anchor.lineText);
+  const text = anchor.text.replace(/\s+/g, "");
+
+  if (isCircledChoice(text)) {
+    return true;
+  }
+
+  if (choiceMarkerCount >= 3) {
+    return true;
+  }
+
+  if (choiceMarkerCount >= 2 && anchor.left > 0.12) {
+    return true;
+  }
+
+  return false;
+}
+
 function parseQuestionNumber(text: string) {
   const compact = text.replace(/\s+/g, "");
 
@@ -625,4 +658,13 @@ function parseQuestionNumber(text: string) {
 
 function clamp01(value: number) {
   return Math.max(0, Math.min(1, value));
+}
+
+function isCircledChoice(text: string) {
+  return /^[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳]$/.test(text);
+}
+
+function countChoiceMarkers(text: string) {
+  const matches = text.match(/[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳]|(?:^|[\s(])(?:1|2|3|4|5)(?:[.)]|(?=\s))/gu);
+  return matches?.length ?? 0;
 }
