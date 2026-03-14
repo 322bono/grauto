@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { imagePartFromDataUrl, type GeminiPart, generateGeminiJson } from "@/lib/gemini";
 import { rankAnswerPageCandidates } from "@/lib/page-matching";
 import { buildSummary } from "@/lib/summary";
+import { normalizeReadableText } from "@/lib/text-quality";
 import type {
   BoundingBox,
   GradeRequestPayload,
@@ -120,15 +121,21 @@ Return JSON only.
 
 Goals:
 1. Match each question image to the most likely answer/explanation page.
-2. Judge correctness only by whether the student's final answer is in the answer list.
-3. Classify visible work as solved / guessed / blank / unclear.
-4. Ignore erased marks or ambiguous overwritten traces.
-5. Return tight normalized boxes for the answer region and explanation region.
-6. Keep feedback short.
+2. For multiple-choice questions, detect the student's selected option number from visible marks.
+3. Judge correctness only by whether the student's final answer is in the answer list.
+4. Classify visible work as solved / guessed / blank / unclear.
+5. Ignore erased marks or ambiguous overwritten traces.
+6. Return tight normalized boxes for the answer region and explanation region.
+7. Keep feedback short.
 
 Rules:
+- For multiple-choice, if the student placed a visible V mark, check mark, slash, circle, or emphasis near a choice, student_answer must be the option number only.
+- Example: a mark near ④ means student_answer="4". A mark near ② means student_answer="2".
+- If a multiple-choice mark is clearly visible, do not return blank or "미인식".
+- For multiple-choice, answer_region should tightly cover the chosen option and its mark.
 - Do not invent symbols, choices, or text you cannot see.
 - Keep question order aligned to selection_id order.
+- Broken OCR text does not matter if the selected option mark is visually clear.
 - mistake_reason: 1 sentence max.
 - explanation: 2 sentences max.
 - recommended_review: 1 sentence max.
@@ -158,7 +165,7 @@ export async function POST(request: Request) {
       parts: buildUserParts(payload),
       responseJsonSchema: GRADE_RESPONSE_SCHEMA,
       maxOutputTokens: estimateOutputTokens(payload.questionSelections.length),
-      temperature: 0.05
+      temperature: 0
     });
 
     return NextResponse.json(normalizeResponse(payload, parsed));
@@ -198,6 +205,7 @@ function buildUserParts(payload: GradeRequestPayload): GeminiPart[] {
         `question_page=${selection.pageNumber}`,
         `question_number_hint=${selection.questionNumberHint ?? "unknown"}`,
         `text_hint=${selection.extractedTextSnippet || "없음"}`,
+        "multiple_choice_hint=객관식이면 문제 이미지에서 체크/V/동그라미가 붙은 선택지 번호만 student_answer로 반환하세요.",
         "answer_page_candidates:",
         candidateHints || "- 없음"
       ].join("\n")
@@ -255,12 +263,12 @@ function normalizeQuestion(
     selectionId: selection.id,
     questionNumber: resolvedQuestionNumber,
     detectedHeaderText: toStringValue(
-      raw?.detected_header_text,
-      selection.extractedTextSnippet || `문제 ${resolvedQuestionNumber}`
+      normalizeReadableText(raw?.detected_header_text, ""),
+      normalizeReadableText(selection.extractedTextSnippet, "") || `문제 ${resolvedQuestionNumber}`
     ),
     questionType,
-    studentAnswer: toStringValue(raw?.student_answer, ""),
-    correctAnswer: toStringValue(raw?.correct_answer, ""),
+    studentAnswer: normalizeStudentAnswer(raw?.student_answer, questionType),
+    correctAnswer: normalizeCorrectAnswer(raw?.correct_answer, questionType),
     isCorrect,
     score,
     maxScore,
@@ -358,6 +366,54 @@ function toNumber(value: unknown, fallback: number) {
 
 function toStringValue(value: unknown, fallback: string) {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : fallback;
+}
+
+function normalizeStudentAnswer(value: unknown, questionType: QuestionType) {
+  const raw = toStringValue(value, "");
+
+  if (questionType !== "multiple-choice") {
+    return raw;
+  }
+
+  return normalizeChoiceAnswer(raw);
+}
+
+function normalizeCorrectAnswer(value: unknown, questionType: QuestionType) {
+  const raw = toStringValue(value, "");
+
+  if (questionType !== "multiple-choice") {
+    return raw;
+  }
+
+  return normalizeChoiceAnswer(raw);
+}
+
+function normalizeChoiceAnswer(value: string) {
+  const compact = value.replace(/\s+/g, "");
+
+  if (!compact) {
+    return "";
+  }
+
+  const circledMap: Record<string, string> = {
+    "①": "1",
+    "②": "2",
+    "③": "3",
+    "④": "4",
+    "⑤": "5"
+  };
+
+  if (circledMap[compact]) {
+    return circledMap[compact];
+  }
+
+  const digitMatch = compact.match(/[1-5]/);
+
+  if (digitMatch) {
+    return digitMatch[0];
+  }
+
+  return compact;
 }
 
 function clamp(value: number, min: number, max: number) {
