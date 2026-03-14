@@ -272,7 +272,7 @@ export function PdfAreaSelector({
         }
       })().catch(() => {
         if (!cancelled) {
-          onRegionsChange([]);
+          return;
         }
       });
     });
@@ -382,7 +382,7 @@ export function PdfAreaSelector({
         }
       })().catch(() => {
         if (!cancelled) {
-          onPagesChange([]);
+          return;
         }
       });
     });
@@ -397,7 +397,7 @@ export function PdfAreaSelector({
       return null;
     }
 
-    return { data: documentData };
+    return { data: clonePdfBytes(documentData) };
   }, [documentData]);
 
   const thumbnailWidth = useMemo(() => {
