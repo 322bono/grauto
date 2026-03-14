@@ -1,4 +1,4 @@
-import type { NormalizedRect, QuestionResult } from "@/lib/types";
+import type { AnswerPagePayload, NormalizedRect, QuestionResult } from "@/lib/types";
 
 interface PageColumn {
   id: string;
@@ -8,8 +8,16 @@ interface PageColumn {
 
 export function resolveLocalExplanationRect(
   question: QuestionResult,
-  pageQuestions: QuestionResult[]
+  pageQuestions: QuestionResult[],
+  answerPage?: AnswerPagePayload | null,
+  displayQuestionNumber?: number | null
 ): NormalizedRect | null {
+  const anchorRect = resolveAnchorBasedRect(answerPage, displayQuestionNumber ?? question.questionNumber);
+
+  if (anchorRect) {
+    return anchorRect;
+  }
+
   const normalizedExplanation = normalizeRect(question.explanationRegion);
   const layout = inferPageLayout(pageQuestions);
   const currentColumn = resolveQuestionColumn(question, layout);
@@ -36,6 +44,48 @@ export function resolveLocalExplanationRect(
     y: top,
     width: horizontal.width,
     height: clamp(bottom - top, 0.08, 0.96 - top)
+  });
+}
+
+function resolveAnchorBasedRect(answerPage: AnswerPagePayload | null | undefined, questionNumber: number | null | undefined) {
+  if (!answerPage?.answerAnchors?.length || !questionNumber) {
+    return null;
+  }
+
+  const anchors = answerPage.answerAnchors
+    .filter((anchor): anchor is NonNullable<typeof anchor> => Boolean(anchor))
+    .filter((anchor) => typeof anchor.questionNumber === "number" && Number.isFinite(anchor.questionNumber))
+    .map((anchor) => ({
+      questionNumber: anchor.questionNumber as number,
+      bounds: normalizeRect(anchor.bounds)
+    }))
+    .filter((anchor): anchor is { questionNumber: number; bounds: NormalizedRect } => Boolean(anchor.bounds));
+
+  if (anchors.length === 0) {
+    return null;
+  }
+
+  const currentAnchor = anchors.find((anchor) => anchor.questionNumber === questionNumber);
+
+  if (!currentAnchor) {
+    return null;
+  }
+
+  const columns = inferAnchorColumns(anchors.map((anchor) => anchor.bounds));
+  const currentColumn = resolveAnchorColumn(currentAnchor.bounds, columns);
+  const nextAnchor = anchors
+    .filter((anchor) => anchor.questionNumber !== currentAnchor.questionNumber)
+    .filter((anchor) => resolveAnchorColumn(anchor.bounds, columns).id === currentColumn.id)
+    .filter((anchor) => anchor.bounds.y > currentAnchor.bounds.y + 0.01)
+    .sort((left, right) => left.bounds.y - right.bounds.y)[0];
+  const top = clamp(currentAnchor.bounds.y, 0.03, 0.93);
+  const bottom = nextAnchor ? clamp(nextAnchor.bounds.y - 0.014, top + 0.08, 0.975) : clamp(top + currentAnchor.bounds.height, top + 0.16, 0.975);
+
+  return normalizeRect({
+    x: currentColumn.x,
+    y: top,
+    width: currentColumn.width,
+    height: clamp(bottom - top, 0.1, 0.975 - top)
   });
 }
 
@@ -181,6 +231,39 @@ function buildColumnGroups(anchors: Array<{ left: number; right: number; center:
   });
 
   return groups.slice(0, 3);
+}
+
+function inferAnchorColumns(anchors: NormalizedRect[]) {
+  const candidates = anchors.map((box) => ({
+    left: box.x,
+    right: box.x + box.width,
+    center: box.x + box.width / 2
+  }));
+
+  if (candidates.length === 0) {
+    return [{ id: "full", x: 0.04, width: 0.92 } satisfies PageColumn];
+  }
+
+  const groups = buildColumnGroups(candidates);
+
+  return groups.map((group, index) => {
+    const left = clamp(Math.min(...group.map((item) => item.left)) - 0.004, 0.02, 0.96);
+    const right = clamp(Math.max(...group.map((item) => item.right)) + 0.006, left + 0.18, 0.98);
+
+    return {
+      id: `anchor-col-${index + 1}`,
+      x: left,
+      width: clamp(right - left, 0.18, 0.96 - left)
+    } satisfies PageColumn;
+  });
+}
+
+function resolveAnchorColumn(anchor: NormalizedRect, columns: PageColumn[]) {
+  const center = anchor.x + anchor.width / 2;
+
+  return [...columns].sort(
+    (left, right) => Math.abs(center - (left.x + left.width / 2)) - Math.abs(center - (right.x + right.width / 2))
+  )[0];
 }
 
 function average(values: number[]) {

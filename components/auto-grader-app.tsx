@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState } from "react";
 import { ExamMetadataForm } from "@/components/exam-metadata-form";
 import { PdfAreaSelector } from "@/components/pdf-area-selector";
 import { ResultsDashboard } from "@/components/results-dashboard";
+import { resolveLocalExplanationRect } from "@/lib/explanation-region";
 import { observeAuthUser, signInWithGoogle, signOutUser } from "@/lib/firebase/auth";
 import { syncExamRecordToCloud, updateCloudRecordSummary } from "@/lib/firebase/cloud-records";
 import { cropImageDataUrl } from "@/lib/image-crop";
@@ -204,7 +205,7 @@ export function AutoGraderApp() {
         ...selection,
         snapshotDataUrl: analysisDataUrl ?? selection.snapshotDataUrl
       })),
-      answerPages: answerPages.map(({ analysisImageDataUrl, ...page }) => ({
+      answerPages: answerPages.map(({ analysisImageDataUrl, answerAnchors, ...page }) => ({
         ...page,
         pageImageDataUrl: analysisImageDataUrl ?? page.pageImageDataUrl
       }))
@@ -315,9 +316,18 @@ export function AutoGraderApp() {
     }
 
     try {
+      const pageQuestions = question?.matchedAnswerPageNumber
+        ? result.questions.filter((item) => item.matchedAnswerPageNumber === question.matchedAnswerPageNumber)
+        : question
+          ? [question]
+          : [];
+      const displayQuestionNumber = selection.questionNumberHint ?? question.questionNumber ?? selection.displayOrder ?? 1;
+      const localExplanationRect = question
+        ? resolveLocalExplanationRect(question, pageQuestions, answerPage, displayQuestionNumber)
+        : null;
       const explanationCropDataUrl =
-        answerPage && question.explanationRegion
-          ? await cropImageDataUrl(answerPage.pageImageDataUrl, question.explanationRegion)
+        answerPage && localExplanationRect
+          ? await cropImageDataUrl(answerPage.pageImageDataUrl, localExplanationRect)
           : null;
 
       const response = await fetch("/api/analyze", {

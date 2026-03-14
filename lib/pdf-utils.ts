@@ -4,7 +4,7 @@ import { pdfjs } from "react-pdf";
 import { buildPdfDocumentInit } from "@/lib/pdf-config";
 import { ensurePdfWorker } from "@/lib/pdf-worker";
 import { normalizeReadableText } from "@/lib/text-quality";
-import type { NormalizedRect } from "@/lib/types";
+import type { NormalizedRect, PageNumberAnchor } from "@/lib/types";
 
 ensurePdfWorker();
 
@@ -43,6 +43,21 @@ interface PositionedTextFragment {
   top: number;
   right: number;
   bottom: number;
+}
+
+interface QuestionAnchorCandidate {
+  questionNumber: number;
+  text: string;
+  left: number;
+  top: number;
+  lineText: string;
+}
+
+interface ColumnBand {
+  id: string;
+  left: number;
+  right: number;
+  center: number;
 }
 
 export function clonePdfBytes(source: Uint8Array) {
@@ -92,6 +107,22 @@ export async function extractPdfQuestionRegions(source: File | ArrayBuffer | Uin
     const textContent = await page.getTextContent();
     const fragments = textContent.items.flatMap((item) => toPositionedFragments(item, viewport.width, viewport.height));
     regionsByPage[pageNumber] = buildQuestionRegionsFromFragments(fragments);
+  }
+
+  return regionsByPage;
+}
+
+export async function extractPdfAnswerRegions(source: File | ArrayBuffer | Uint8Array) {
+  const data = await toPdfData(source);
+  const document = await pdfjs.getDocument(buildPdfDocumentInit(data)).promise;
+  const regionsByPage: Record<number, PageNumberAnchor[]> = {};
+
+  for (let pageNumber = 1; pageNumber <= document.numPages; pageNumber += 1) {
+    const page = await document.getPage(pageNumber);
+    const viewport = page.getViewport({ scale: 1 });
+    const textContent = await page.getTextContent();
+    const fragments = textContent.items.flatMap((item) => toPositionedFragments(item, viewport.width, viewport.height));
+    regionsByPage[pageNumber] = buildAnswerRegionsFromFragments(fragments);
   }
 
   return regionsByPage;
@@ -354,39 +385,8 @@ function toPositionedFragments(item: unknown, viewportWidth: number, viewportHei
 }
 
 function buildQuestionRegionsFromFragments(fragments: PositionedTextFragment[]) {
-  const anchors = fragments
-    .map((fragment) => ({
-      questionNumber: parseQuestionNumber(fragment.text),
-      text: fragment.text,
-      left: fragment.left,
-      top: fragment.top,
-      lineText: buildLineText(fragment, fragments)
-    }))
-    .filter(
-      (anchor): anchor is { questionNumber: number; text: string; left: number; top: number; lineText: string } =>
-        anchor.questionNumber !== null &&
-        anchor.left <= 0.24 &&
-        anchor.top >= 0.04 &&
-        anchor.top <= 0.96 &&
-        !isHeaderLikeAnchor(anchor)
-    )
-    .sort((left, right) => left.top - right.top || left.left - right.left);
-
-  const dedupedAnchors = anchors.reduce<Array<{ questionNumber: number; left: number; top: number }>>((current, anchor) => {
-    const previous = current[current.length - 1];
-
-    if (previous && Math.abs(previous.top - anchor.top) < 0.025) {
-      if (anchor.left < previous.left) {
-        previous.left = anchor.left;
-        previous.questionNumber = anchor.questionNumber;
-      }
-
-      return current;
-    }
-
-    current.push({ ...anchor });
-    return current;
-  }, []);
+  const anchors = detectQuestionAnchors(fragments).filter((anchor) => anchor.left <= 0.24);
+  const dedupedAnchors = dedupeQuestionAnchors(anchors);
 
   if (dedupedAnchors.length === 0) {
     return [] as DetectedQuestionRegion[];
@@ -417,6 +417,147 @@ function buildQuestionRegionsFromFragments(fragments: PositionedTextFragment[]) 
       textSnippet: normalizeReadableText(textSnippet)
     };
   });
+}
+
+function buildAnswerRegionsFromFragments(fragments: PositionedTextFragment[]) {
+  const anchors = dedupeQuestionAnchors(detectQuestionAnchors(fragments));
+
+  if (anchors.length === 0) {
+    return [] as PageNumberAnchor[];
+  }
+
+  const columns = inferColumnBands(anchors);
+
+  return anchors.slice(0, 40).map((anchor) => {
+    const column = resolveAnchorColumn(anchor, columns);
+    const nextAnchor = anchors
+      .filter((candidate) => candidate.questionNumber !== anchor.questionNumber)
+      .filter((candidate) => resolveAnchorColumn(candidate, columns).id === column.id)
+      .filter((candidate) => candidate.top > anchor.top + 0.01)
+      .sort((left, right) => left.top - right.top)[0];
+    const top = clamp01(anchor.top - 0.014);
+    const bottom = nextAnchor ? clamp01(nextAnchor.top - 0.016) : 0.972;
+    const safeBottom = bottom <= top + 0.08 ? Math.min(0.972, top + 0.22) : bottom;
+    const bounds = clampBoundingBox({
+      x: column.left,
+      y: top,
+      width: column.right - column.left,
+      height: safeBottom - top
+    });
+    const textSnippet = fragments
+      .filter((fragment) => fragment.left <= column.right + 0.01 && fragment.right >= column.left - 0.01)
+      .filter((fragment) => fragment.top >= top - 0.01 && fragment.bottom <= safeBottom + 0.012)
+      .map((fragment) => fragment.text)
+      .join(" ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 220);
+
+    return {
+      questionNumber: anchor.questionNumber,
+      bounds: bounds ?? {
+        x: column.left,
+        y: top,
+        width: Math.max(0.18, column.right - column.left),
+        height: Math.max(0.12, safeBottom - top)
+      },
+      textSnippet: normalizeReadableText(textSnippet)
+    } satisfies PageNumberAnchor;
+  });
+}
+
+function detectQuestionAnchors(fragments: PositionedTextFragment[]) {
+  return fragments
+    .map((fragment) => ({
+      questionNumber: parseQuestionNumber(fragment.text),
+      text: fragment.text,
+      left: fragment.left,
+      top: fragment.top,
+      lineText: buildLineText(fragment, fragments)
+    }))
+    .filter(
+      (anchor): anchor is QuestionAnchorCandidate =>
+        anchor.questionNumber !== null &&
+        anchor.top >= 0.04 &&
+        anchor.top <= 0.965 &&
+        !isHeaderLikeAnchor(anchor)
+    )
+    .sort((left, right) => left.top - right.top || left.left - right.left);
+}
+
+function dedupeQuestionAnchors(anchors: QuestionAnchorCandidate[]) {
+  return anchors.reduce<Array<{ questionNumber: number; left: number; top: number }>>((current, anchor) => {
+    const previous = current[current.length - 1];
+
+    if (previous && Math.abs(previous.top - anchor.top) < 0.025) {
+      if (anchor.left < previous.left) {
+        previous.left = anchor.left;
+        previous.questionNumber = anchor.questionNumber;
+      }
+
+      return current;
+    }
+
+    current.push({ ...anchor });
+    return current;
+  }, []);
+}
+
+function inferColumnBands(anchors: Array<{ questionNumber: number; left: number; top: number }>) {
+  if (anchors.length === 0) {
+    return [{ id: "col-1", left: 0.04, right: 0.96, center: 0.5 }] satisfies ColumnBand[];
+  }
+
+  const groups = anchors
+    .slice()
+    .sort((left, right) => left.left - right.left)
+    .reduce<Array<Array<{ questionNumber: number; left: number; top: number }>>>((current, anchor) => {
+      const previous = current[current.length - 1];
+
+      if (!previous) {
+        current.push([anchor]);
+        return current;
+      }
+
+      const previousCenter = average(previous.map((item) => item.left));
+
+      if (Math.abs(anchor.left - previousCenter) <= 0.14) {
+        previous.push(anchor);
+        return current;
+      }
+
+      current.push([anchor]);
+      return current;
+    }, []);
+
+  const sortedGroups = groups
+    .map((group, index) => ({
+      id: `col-${index + 1}`,
+      center: average(group.map((item) => item.left))
+    }))
+    .sort((left, right) => left.center - right.center);
+
+  return sortedGroups.map((group, index) => {
+    const previous = sortedGroups[index - 1];
+    const next = sortedGroups[index + 1];
+    const left = previous ? clamp01((previous.center + group.center) / 2 - 0.03) : 0.03;
+    const right = next ? clamp01((group.center + next.center) / 2 + 0.05) : 0.97;
+
+    return {
+      id: group.id,
+      left,
+      right: Math.max(left + 0.18, right),
+      center: group.center
+    } satisfies ColumnBand;
+  });
+}
+
+function resolveAnchorColumn(anchor: { left: number }, columns: ColumnBand[]) {
+  return [...columns].sort((left, right) => Math.abs(anchor.left - left.center) - Math.abs(anchor.left - right.center))[0];
+}
+
+function average(values: number[]) {
+  return values.reduce((sum, value) => sum + value, 0) / Math.max(1, values.length);
 }
 
 function buildLineText(target: PositionedTextFragment, fragments: PositionedTextFragment[]) {

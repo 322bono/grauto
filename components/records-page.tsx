@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { ResultsDashboard } from "@/components/results-dashboard";
+import { resolveLocalExplanationRect } from "@/lib/explanation-region";
 import { observeAuthUser } from "@/lib/firebase/auth";
 import {
   deleteCloudRecord,
@@ -215,9 +216,18 @@ export function RecordsPage() {
     }
 
     try {
+      const pageQuestions = question?.matchedAnswerPageNumber
+        ? selectedRecord.result.questions.filter((item) => item.matchedAnswerPageNumber === question.matchedAnswerPageNumber)
+        : question
+          ? [question]
+          : [];
+      const displayQuestionNumber = selection.questionNumberHint ?? question.questionNumber ?? selection.displayOrder ?? 1;
+      const localExplanationRect = question
+        ? resolveLocalExplanationRect(question, pageQuestions, answerPage, displayQuestionNumber)
+        : null;
       const explanationCropDataUrl =
-        answerPage && question.explanationRegion
-          ? await cropImageDataUrl(answerPage.pageImageDataUrl, question.explanationRegion)
+        answerPage && localExplanationRect
+          ? await cropImageDataUrl(answerPage.pageImageDataUrl, localExplanationRect)
           : null;
 
       const response = await fetch("/api/analyze", {

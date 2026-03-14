@@ -32,12 +32,19 @@ export interface SelectedQuestionRegionPayload {
   questionNumberHint?: number | null;
 }
 
+export interface PageNumberAnchor {
+  questionNumber: number | null;
+  bounds: NormalizedRect;
+  textSnippet?: string;
+}
+
 export interface AnswerPagePayload {
   id: string;
   pageNumber: number;
   pageImageDataUrl: string;
   analysisImageDataUrl?: string;
   extractedTextSnippet?: string;
+  answerAnchors?: PageNumberAnchor[];
 }
 
 export interface GradeRequestPayload {

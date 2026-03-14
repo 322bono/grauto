@@ -166,10 +166,11 @@ export function ResultsDashboard({
           const selection = selectionMap.get(question.selectionId);
           const answerPage = question.matchedAnswerPageNumber ? answerPageMap.get(question.matchedAnswerPageNumber) : undefined;
           const pageQuestions = question.matchedAnswerPageNumber ? pageQuestionMap.get(question.matchedAnswerPageNumber) ?? [question] : [question];
-          const explanationRect = resolveLocalExplanationRect(question, pageQuestions);
+          const displayQuestionNumber = getDisplayQuestionNumber(question, index);
+          const explanationTargetNumber = selection?.questionNumberHint ?? question.questionNumber ?? displayQuestionNumber;
+          const explanationRect = resolveLocalExplanationRect(question, pageQuestions, answerPage, explanationTargetNumber);
           const analysis = normalizeAnalysis(question.deepAnalysis);
           const isAnalyzing = loadingAnalysisId === question.selectionId;
-          const displayQuestionNumber = getDisplayQuestionNumber(question, index);
 
           return (
             <article className="result-question-card" id={`question-${question.selectionId}`} key={question.selectionId}>
@@ -319,9 +320,10 @@ export function ResultsDashboard({
               const selection = selectionMap.get(question.selectionId);
               const answerPage = question.matchedAnswerPageNumber ? answerPageMap.get(question.matchedAnswerPageNumber) : undefined;
               const pageQuestions = question.matchedAnswerPageNumber ? pageQuestionMap.get(question.matchedAnswerPageNumber) ?? [question] : [question];
-              const explanationRect = resolveLocalExplanationRect(question, pageQuestions);
               const analysis = normalizeAnalysis(question.deepAnalysis);
               const displayQuestionNumber = getDisplayQuestionNumber(question, 0);
+              const explanationTargetNumber = selection?.questionNumberHint ?? question.questionNumber ?? displayQuestionNumber;
+              const explanationRect = resolveLocalExplanationRect(question, pageQuestions, answerPage, explanationTargetNumber);
 
               return (
                 <div className="note-card results-note-card" key={`note-${question.selectionId}`} data-note-card="true">

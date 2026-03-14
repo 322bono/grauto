@@ -5,12 +5,13 @@ import { Document, Page, pdfjs } from "react-pdf";
 import { PLACEHOLDER_IMAGE_DATA_URL } from "@/lib/image-placeholder";
 import { buildPdfDocumentInit, PDF_DOCUMENT_OPTIONS } from "@/lib/pdf-config";
 import { ensurePdfWorker } from "@/lib/pdf-worker";
-import type { AnswerPagePayload, SelectedQuestionRegionPayload } from "@/lib/types";
+import type { AnswerPagePayload, PageNumberAnchor, SelectedQuestionRegionPayload } from "@/lib/types";
 import {
   canvasToCompressedDataUrl,
   clonePdfBytes,
   cropCanvasToCompressedDataUrl,
   detectQuestionBandsFromCanvas,
+  extractPdfAnswerRegions,
   extractPdfQuestionRegions,
   extractPdfTextSnippets
 } from "@/lib/pdf-utils";
@@ -53,6 +54,7 @@ export function PdfAreaSelector({
   const [loadError, setLoadError] = useState("");
   const [textSnippets, setTextSnippets] = useState<Record<number, string>>({});
   const [questionRegionsByPage, setQuestionRegionsByPage] = useState<Record<number, DetectedQuestionSlice[]>>({});
+  const [answerAnchorsByPage, setAnswerAnchorsByPage] = useState<Record<number, PageNumberAnchor[]>>({});
   const [selectedPages, setSelectedPages] = useState<number[]>([]);
 
   useEffect(() => {
@@ -79,6 +81,7 @@ export function PdfAreaSelector({
     setSelectedPages([]);
     setTextSnippets({});
     setQuestionRegionsByPage({});
+    setAnswerAnchorsByPage({});
     canvasRefs.current = {};
     pageHostRefs.current = {};
 
@@ -100,19 +103,22 @@ export function PdfAreaSelector({
           setDocumentData(clonePdfBytes(bytes));
 
           try {
-            const [snippets, detectedRegions] = await Promise.all([
+            const [snippets, detectedRegions, detectedAnswerAnchors] = await Promise.all([
               extractPdfTextSnippets(bytes),
-              selectionMode === "region" ? extractPdfQuestionRegions(bytes) : Promise.resolve({})
+              selectionMode === "region" ? extractPdfQuestionRegions(bytes) : Promise.resolve({}),
+              selectionMode === "page" ? extractPdfAnswerRegions(bytes) : Promise.resolve({})
             ]);
 
             if (!cancelled) {
               setTextSnippets(snippets);
               setQuestionRegionsByPage(detectedRegions as Record<number, DetectedQuestionSlice[]>);
+              setAnswerAnchorsByPage(detectedAnswerAnchors as Record<number, PageNumberAnchor[]>);
             }
           } catch {
             if (!cancelled) {
               setTextSnippets({});
               setQuestionRegionsByPage({});
+              setAnswerAnchorsByPage({});
             }
           }
         })
@@ -379,7 +385,8 @@ export function PdfAreaSelector({
               pageNumber,
               pageImageDataUrl,
               analysisImageDataUrl: analysisImageDataUrl || pageImageDataUrl,
-              extractedTextSnippet: textSnippets[pageNumber] ?? ""
+              extractedTextSnippet: textSnippets[pageNumber] ?? "",
+              answerAnchors: answerAnchorsByPage[pageNumber] ?? []
             });
           }
 
@@ -399,7 +406,7 @@ export function PdfAreaSelector({
     return () => {
       cancelled = true;
     };
-  }, [documentData, onPagesChange, selectedPages, selectionMode, textSnippets]);
+  }, [answerAnchorsByPage, documentData, onPagesChange, selectedPages, selectionMode, textSnippets]);
 
   const documentSource = useMemo(() => {
     if (!documentData) {
@@ -503,7 +510,8 @@ export function PdfAreaSelector({
             pageNumber,
             pageImageDataUrl,
             analysisImageDataUrl: pageImageDataUrl,
-            extractedTextSnippet: textSnippets[pageNumber] ?? ""
+            extractedTextSnippet: textSnippets[pageNumber] ?? "",
+            answerAnchors: answerAnchorsByPage[pageNumber] ?? []
           } satisfies AnswerPagePayload
         ];
       });
