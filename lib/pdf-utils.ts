@@ -347,12 +347,18 @@ function buildQuestionRegionsFromFragments(fragments: PositionedTextFragment[]) 
   const anchors = fragments
     .map((fragment) => ({
       questionNumber: parseQuestionNumber(fragment.text),
+      text: fragment.text,
       left: fragment.left,
-      top: fragment.top
+      top: fragment.top,
+      lineText: buildLineText(fragment, fragments)
     }))
     .filter(
-      (anchor): anchor is { questionNumber: number; left: number; top: number } =>
-        anchor.questionNumber !== null && anchor.left <= 0.24 && anchor.top >= 0.04 && anchor.top <= 0.96
+      (anchor): anchor is { questionNumber: number; text: string; left: number; top: number; lineText: string } =>
+        anchor.questionNumber !== null &&
+        anchor.left <= 0.24 &&
+        anchor.top >= 0.04 &&
+        anchor.top <= 0.96 &&
+        !isHeaderLikeAnchor(anchor)
     )
     .sort((left, right) => left.top - right.top || left.left - right.left);
 
@@ -401,6 +407,37 @@ function buildQuestionRegionsFromFragments(fragments: PositionedTextFragment[]) 
       textSnippet
     };
   });
+}
+
+function buildLineText(target: PositionedTextFragment, fragments: PositionedTextFragment[]) {
+  return fragments
+    .filter((fragment) => Math.abs(fragment.top - target.top) <= 0.02)
+    .sort((left, right) => left.left - right.left)
+    .map((fragment) => fragment.text)
+    .join(" ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function isHeaderLikeAnchor(anchor: { questionNumber: number | null; text: string; left: number; top: number; lineText: string }) {
+  const compactLine = anchor.lineText.replace(/\s+/g, "");
+
+  if (anchor.top <= 0.16 && /제\d+교시/.test(compactLine)) {
+    return true;
+  }
+
+  if (
+    anchor.top <= 0.16 &&
+    /(교시|영역|모의고사|소단원|중단원|점검|테스트|과목)/.test(anchor.lineText)
+  ) {
+    return true;
+  }
+
+  if (anchor.top <= 0.1 && anchor.text === String(anchor.questionNumber)) {
+    return true;
+  }
+
+  return false;
 }
 
 function parseQuestionNumber(text: string) {
