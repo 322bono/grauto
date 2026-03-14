@@ -5,6 +5,7 @@ import { exportWrongAnswerPdf } from "@/lib/export-note";
 import { resolveLocalExplanationRect } from "@/lib/explanation-region";
 import { cropImageDataUrl } from "@/lib/image-crop";
 import { clampBoundingBox, renderCropStyle } from "@/lib/pdf-utils";
+import { normalizeReadableText } from "@/lib/text-quality";
 import type { AnswerPagePayload, GradeResponsePayload, QuestionDeepAnalysis, QuestionResult, SelectedQuestionRegionPayload } from "@/lib/types";
 
 interface ResultsDashboardProps {
@@ -631,7 +632,7 @@ function buildReportQuote(rate: number) {
 }
 
 function sanitizeText(value: string | undefined | null, fallback: string) {
-  const normalized = (value ?? "").replace(/\s+/g, " ").trim();
+  const normalized = normalizeReadableText(value ?? "", "");
 
   if (!normalized) {
     return fallback;

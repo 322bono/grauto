@@ -1,7 +1,9 @@
 "use client";
 
 import { pdfjs } from "react-pdf";
+import { buildPdfDocumentInit } from "@/lib/pdf-config";
 import { ensurePdfWorker } from "@/lib/pdf-worker";
+import { normalizeReadableText } from "@/lib/text-quality";
 import type { NormalizedRect } from "@/lib/types";
 
 ensurePdfWorker();
@@ -61,7 +63,7 @@ function toPdfData(source: File | ArrayBuffer | Uint8Array) {
 
 export async function extractPdfTextSnippets(source: File | ArrayBuffer | Uint8Array) {
   const data = await toPdfData(source);
-  const document = await pdfjs.getDocument({ data }).promise;
+  const document = await pdfjs.getDocument(buildPdfDocumentInit(data)).promise;
   const snippets: Record<number, string> = {};
 
   for (let pageNumber = 1; pageNumber <= document.numPages; pageNumber += 1) {
@@ -73,7 +75,7 @@ export async function extractPdfTextSnippets(source: File | ArrayBuffer | Uint8A
       .replace(/\s+/g, " ")
       .trim();
 
-    snippets[pageNumber] = text.slice(0, 180);
+    snippets[pageNumber] = normalizeReadableText(text.slice(0, 180));
   }
 
   return snippets;
@@ -81,7 +83,7 @@ export async function extractPdfTextSnippets(source: File | ArrayBuffer | Uint8A
 
 export async function extractPdfQuestionRegions(source: File | ArrayBuffer | Uint8Array) {
   const data = await toPdfData(source);
-  const document = await pdfjs.getDocument({ data }).promise;
+  const document = await pdfjs.getDocument(buildPdfDocumentInit(data)).promise;
   const regionsByPage: Record<number, DetectedQuestionRegion[]> = {};
 
   for (let pageNumber = 1; pageNumber <= document.numPages; pageNumber += 1) {
@@ -292,12 +294,20 @@ export function detectQuestionBandsFromCanvas(sourceCanvas: HTMLCanvasElement) {
   return mergedSegments
     .filter((segment) => segment.end - segment.start >= minHeight)
     .slice(0, 12)
-    .map((segment) => ({
-      x: left / width,
-      y: (top + Math.max(0, segment.start - 10)) / height,
-      width: cropWidth / width,
-      height: Math.min(height - top, segment.end - segment.start + 20) / height
-    }))
+    .map((segment, index, allSegments) => {
+      const nextSegment = allSegments[index + 1];
+      const start = Math.max(0, segment.start - 12);
+      const fallbackBottom = Math.min(cropHeight - 1, segment.end + Math.max(48, Math.round(cropHeight * 0.22)));
+      const nextBottom = nextSegment ? Math.max(segment.end + 12, nextSegment.start - 10) : fallbackBottom;
+      const end = Math.min(cropHeight - 1, Math.max(fallbackBottom, nextBottom));
+
+      return {
+        x: left / width,
+        y: (top + start) / height,
+        width: cropWidth / width,
+        height: Math.min(height - top, end - start) / height
+      };
+    })
     .map((box) => clampBoundingBox(box))
     .filter((box): box is NormalizedRect => Boolean(box));
 }
@@ -385,7 +395,7 @@ function buildQuestionRegionsFromFragments(fragments: PositionedTextFragment[]) 
   return dedupedAnchors.slice(0, 20).map((anchor, index) => {
     const nextAnchor = dedupedAnchors[index + 1];
     const startY = Math.max(0.04, anchor.top - 0.018);
-    const endY = nextAnchor ? Math.max(startY + 0.05, nextAnchor.top - 0.022) : 0.94;
+    const endY = nextAnchor ? Math.min(0.94, Math.max(startY + 0.18, nextAnchor.top - 0.018)) : 0.94;
     const bounds = clampBoundingBox({
       x: 0.04,
       y: startY,
@@ -404,7 +414,7 @@ function buildQuestionRegionsFromFragments(fragments: PositionedTextFragment[]) 
     return {
       questionNumber: anchor.questionNumber,
       bounds: bounds ?? { x: 0.04, y: startY, width: 0.92, height: Math.max(0.08, endY - startY) },
-      textSnippet
+      textSnippet: normalizeReadableText(textSnippet)
     };
   });
 }

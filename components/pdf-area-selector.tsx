@@ -3,6 +3,7 @@
 import { startTransition, useEffect, useMemo, useRef, useState } from "react";
 import { Document, Page, pdfjs } from "react-pdf";
 import { PLACEHOLDER_IMAGE_DATA_URL } from "@/lib/image-placeholder";
+import { buildPdfDocumentInit, PDF_DOCUMENT_OPTIONS } from "@/lib/pdf-config";
 import { ensurePdfWorker } from "@/lib/pdf-worker";
 import type { AnswerPagePayload, SelectedQuestionRegionPayload } from "@/lib/types";
 import {
@@ -211,7 +212,7 @@ export function PdfAreaSelector({
 
     startTransition(() => {
       (async () => {
-        const pdfDocument = await pdfjs.getDocument({ data: clonePdfBytes(documentData) }).promise;
+        const pdfDocument = await pdfjs.getDocument(buildPdfDocumentInit(clonePdfBytes(documentData))).promise;
 
         try {
           const nextRegions: SelectedQuestionRegionPayload[] = [];
@@ -337,7 +338,7 @@ export function PdfAreaSelector({
 
     startTransition(() => {
       (async () => {
-        const pdfDocument = await pdfjs.getDocument({ data: clonePdfBytes(documentData) }).promise;
+        const pdfDocument = await pdfjs.getDocument(buildPdfDocumentInit(clonePdfBytes(documentData))).promise;
 
         try {
           const nextPages: AnswerPagePayload[] = [];
@@ -599,6 +600,7 @@ export function PdfAreaSelector({
           <Document
             key={file ? `${file.name}-${file.size}-${file.lastModified}` : "empty-pdf"}
             file={documentSource}
+            options={PDF_DOCUMENT_OPTIONS}
             loading={<div className="empty">PDF를 불러오는 중입니다.</div>}
             noData={<div className="empty">PDF 데이터를 준비하는 중입니다.</div>}
             error={<div className="empty">PDF 미리보기를 불러오지 못했습니다. 다른 PDF로 다시 시도해 주세요.</div>}
