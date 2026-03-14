@@ -58,7 +58,7 @@ export function ResultsDashboard({
   );
   const answerPageMap = useMemo(() => new Map(answerPages.map((page) => [page.pageNumber, page])), [answerPages]);
   const getActualQuestionNumber = (question: QuestionResult, selection?: SelectedQuestionRegionPayload | null) =>
-    selection?.questionNumberHint ?? question.questionNumber ?? selection?.displayOrder ?? Number.MAX_SAFE_INTEGER;
+    selection?.displayOrder ?? selection?.questionNumberHint ?? question.questionNumber ?? Number.MAX_SAFE_INTEGER;
   const sortedQuestions = useMemo(
     () =>
       [...result.questions].sort((left, right) => {

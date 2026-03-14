@@ -161,7 +161,7 @@ test("grade route normalizes multiple-choice answers and fixes answer page by an
   }
 });
 
-test("grade route keeps multiple-choice type even in fallback mode", async () => {
+test("grade route fails fast when Gemini request fails", async () => {
   process.env.GEMINI_API_KEY = "test-key";
   process.env.GEMINI_MODEL = "gemini-2.5-flash";
 
@@ -189,14 +189,9 @@ test("grade route keeps multiple-choice type even in fallback mode", async () =>
       })
     );
 
-    assert.equal(response.status, 200);
-    const body = (await response.json()) as {
-      mode: string;
-      questions: Array<{ questionType: string }>;
-    };
-
-    assert.equal(body.mode, "fallback");
-    assert.equal(body.questions[0]?.questionType, "multiple-choice");
+    assert.equal(response.status, 502);
+    const text = await response.text();
+    assert.match(text, /AI 채점에 실패했습니다/);
   } finally {
     global.fetch = originalFetch;
   }
@@ -350,7 +345,7 @@ test("grade route infers multiple-choice from dense option sequences even when m
   }
 });
 
-test("grade route fallback infers multiple-choice from objective prompt and option markers", async () => {
+test("grade route does not return fallback payload on model failure", async () => {
   process.env.GEMINI_API_KEY = "test-key";
   process.env.GEMINI_MODEL = "gemini-2.5-flash";
 
@@ -384,20 +379,15 @@ test("grade route fallback infers multiple-choice from objective prompt and opti
       })
     );
 
-    assert.equal(response.status, 200);
-    const body = (await response.json()) as {
-      mode: string;
-      questions: Array<{ questionType: string }>;
-    };
-
-    assert.equal(body.mode, "fallback");
-    assert.equal(body.questions[0]?.questionType, "multiple-choice");
+    assert.equal(response.status, 502);
+    const text = await response.text();
+    assert.doesNotMatch(text, /fallback/i);
   } finally {
     global.fetch = originalFetch;
   }
 });
 
-test("grade route explains broken JSON responses instead of vague temporary model errors", async () => {
+test("grade route returns 502 on broken JSON responses", async () => {
   process.env.GEMINI_API_KEY = "test-key";
   process.env.GEMINI_MODEL = "gemini-2.5-flash";
 
@@ -414,21 +404,15 @@ test("grade route explains broken JSON responses instead of vague temporary mode
       })
     );
 
-    assert.equal(response.status, 200);
-    const body = (await response.json()) as {
-      mode: string;
-      questions: Array<{ feedback: { explanation: string; mistakeReason: string } }>;
-    };
-
-    assert.equal(body.mode, "fallback");
-    assert.match(body.questions[0]?.feedback.mistakeReason ?? "", /깨진 JSON 형식/);
-    assert.match(body.questions[0]?.feedback.explanation ?? "", /응답 형식이 망가져 결과를 읽어오지 못했습니다/);
+    assert.equal(response.status, 502);
+    const text = await response.text();
+    assert.match(text, /AI 응답 형식이 깨져 채점을 완료하지 못했습니다/);
   } finally {
     global.fetch = originalFetch;
   }
 });
 
-test("grade route explains Gemini quota exhaustion clearly", async () => {
+test("grade route returns 429 on Gemini quota exhaustion", async () => {
   process.env.GEMINI_API_KEY = "test-key";
   process.env.GEMINI_MODEL = "gemini-2.5-flash";
 
@@ -439,7 +423,13 @@ test("grade route explains Gemini quota exhaustion clearly", async () => {
         error: {
           code: 429,
           status: "RESOURCE_EXHAUSTED",
-          message: "Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests",
+          message:
+            "You exceeded your current quota. For more information on this error, head to: https://ai.google.dev/gemini-api/docs. Please retry in 26.388640656s.",
+          details: [
+            {
+              retryDelay: "26s",
+            },
+          ],
         },
       }),
       {
@@ -457,15 +447,10 @@ test("grade route explains Gemini quota exhaustion clearly", async () => {
       })
     );
 
-    assert.equal(response.status, 200);
-    const body = (await response.json()) as {
-      mode: string;
-      questions: Array<{ feedback: { explanation: string; recommendedReview: string } }>;
-    };
-
-    assert.equal(body.mode, "fallback");
-    assert.match(body.questions[0]?.feedback.explanation ?? "", /무료 등급의 분당 요청 수를 넘어서/);
-    assert.match(body.questions[0]?.feedback.recommendedReview ?? "", /잠시 기다렸다가 다시 시도/);
+    assert.equal(response.status, 429);
+    const text = await response.text();
+    assert.match(text, /약 26초 후 다시 시도/);
+    assert.doesNotMatch(text, /https?:\/\//);
   } finally {
     global.fetch = originalFetch;
   }

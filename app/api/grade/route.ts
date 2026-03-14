@@ -150,7 +150,9 @@ export async function POST(request: Request) {
   const model = process.env.GEMINI_MODEL ?? "gemini-2.5-flash";
 
   if (!apiKey) {
-    return NextResponse.json(buildFallbackResponse(payload, "GEMINI_API_KEY is missing."));
+    return new NextResponse("GEMINI_API_KEY가 설정되지 않았습니다. 서버 환경 변수를 확인해 주세요.", {
+      status: 500,
+    });
   }
 
   try {
@@ -167,8 +169,35 @@ export async function POST(request: Request) {
     return NextResponse.json(normalizeResponse(payload, parsed));
   } catch (error) {
     const message = error instanceof Error ? error.message : "Automatic grading failed.";
-    return NextResponse.json(buildFallbackResponse(payload, message));
+    return buildGradeErrorResponse(message);
   }
+}
+
+function buildGradeErrorResponse(rawMessage: string) {
+  const normalizedReason = extractFailureReason(rawMessage);
+
+  if (/RESOURCE_EXHAUSTED|quota|rate.?limit|free_tier|too many requests|429/i.test(normalizedReason)) {
+    const retryDelaySeconds = extractRetryDelaySeconds(rawMessage, normalizedReason);
+
+    return new NextResponse(
+      retryDelaySeconds !== null
+        ? `Gemini quota가 초과되었습니다. 약 ${retryDelaySeconds}초 후 다시 시도해 주세요.`
+        : "Gemini quota가 초과되었습니다. 잠시 후 다시 시도해 주세요.",
+      { status: 429 }
+    );
+  }
+
+  if (/JSON parse failed|Unexpected end of JSON|double-quoted property name|Expected .* in JSON/i.test(normalizedReason)) {
+    return new NextResponse(
+      "AI 응답 형식이 깨져 채점을 완료하지 못했습니다. 잠시 후 다시 시도해 주세요.",
+      { status: 502 }
+    );
+  }
+
+  return new NextResponse(
+    `AI 채점에 실패했습니다. 상세 원인: ${summarizeFailureReason(normalizedReason) || "unknown error"}`,
+    { status: 502 }
+  );
 }
 
 function buildUserParts(payload: GradeRequestPayload): GeminiPart[] {
@@ -373,6 +402,7 @@ function buildFallbackResponse(payload: GradeRequestPayload, reason: string): Gr
 function classifyFallbackFailure(rawReason: string) {
   const normalizedReason = extractFailureReason(rawReason);
   const shortDetail = summarizeFailureReason(normalizedReason);
+  const retryDelaySeconds = extractRetryDelaySeconds(rawReason, normalizedReason);
 
   if (/GEMINI_API_KEY.*missing/i.test(normalizedReason)) {
     return {
@@ -386,11 +416,14 @@ function classifyFallbackFailure(rawReason: string) {
   if (/RESOURCE_EXHAUSTED|quota|rate.?limit|free_tier|RetryInfo|too many requests/i.test(normalizedReason)) {
     return {
       mistakeReason: "Gemini 무료 요청 한도에 걸려 이번 채점 요청이 거절되었습니다.",
-      explanation: appendFailureDetail(
-        "모델 응답 문제가 아니라 quota 문제입니다. 무료 등급의 분당 요청 수를 넘어서 채점이 중간에 멈췄습니다.",
-        shortDetail
-      ),
-      recommendedReview: "잠시 기다렸다가 다시 시도하거나, 한 번에 보내는 요청 수를 줄여 주세요.",
+      explanation:
+        retryDelaySeconds !== null
+          ? `모델 응답 문제가 아니라 무료 quota 문제입니다. 분당 요청 수를 넘겨 채점이 멈췄고, 약 ${retryDelaySeconds}초 뒤에 다시 시도할 수 있습니다.`
+          : "모델 응답 문제가 아니라 무료 quota 문제입니다. 분당 요청 수를 넘겨 채점이 중간에 멈췄습니다.",
+      recommendedReview:
+        retryDelaySeconds !== null
+          ? `약 ${retryDelaySeconds}초 정도 기다린 뒤 다시 시도하거나, 한 번에 보내는 요청 수를 줄여 주세요.`
+          : "잠시 기다렸다가 다시 시도하거나, 한 번에 보내는 요청 수를 줄여 주세요.",
       conceptTags: ["무료 한도 초과"],
     };
   }
@@ -476,7 +509,15 @@ function extractFailureReason(rawReason: string) {
 }
 
 function summarizeFailureReason(reason: string) {
-  return reason.replace(/\s+/g, " ").trim().slice(0, 180);
+  return reason
+    .replace(/https?:\/\/\S+/gi, "")
+    .replace(/For more information.*$/i, "")
+    .replace(/Please check your plan and billing details\.?/gi, "")
+    .replace(/To monitor your current usage.*$/i, "")
+    .replace(/\*.*$/i, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 180);
 }
 
 function appendFailureDetail(message: string, detail: string) {
@@ -485,6 +526,38 @@ function appendFailureDetail(message: string, detail: string) {
   }
 
   return `${message} 세부 원인: ${detail}.`;
+}
+
+function extractRetryDelaySeconds(rawReason: string, normalizedReason: string) {
+  try {
+    const parsed = JSON.parse(rawReason) as {
+      error?: {
+        details?: Array<{
+          retryDelay?: string;
+        }>;
+      };
+    };
+    const retryDelay = parsed.error?.details?.find((detail) => typeof detail?.retryDelay === "string")?.retryDelay;
+
+    if (retryDelay) {
+      const seconds = Number.parseInt(retryDelay.replace(/[^\d]/g, ""), 10);
+
+      if (Number.isFinite(seconds) && seconds > 0) {
+        return seconds;
+      }
+    }
+  } catch {
+    // Ignore parse failures and fall back to regex extraction.
+  }
+
+  const retryMatch = normalizedReason.match(/retry in\s+(\d+)(?:\.\d+)?s?/i) ?? normalizedReason.match(/(\d+)초/);
+
+  if (!retryMatch) {
+    return null;
+  }
+
+  const seconds = Number.parseInt(retryMatch[1], 10);
+  return Number.isFinite(seconds) && seconds > 0 ? seconds : null;
 }
 
 function inferFallbackQuestionType(

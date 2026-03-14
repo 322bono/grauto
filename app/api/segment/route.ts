@@ -10,6 +10,35 @@ import type {
 
 export const runtime = "nodejs";
 
+interface RawQuestionRegion {
+  question_number?: number | null;
+  bounds?: NormalizedRect;
+  text_snippet?: string;
+}
+
+interface RawQuestionPage {
+  page_number?: number;
+  detected_question_count?: number | null;
+  question_regions?: RawQuestionRegion[];
+}
+
+interface RawAnswerPage {
+  page_number?: number;
+  answer_anchors?: Array<{
+    question_number?: number | null;
+    bounds?: NormalizedRect;
+    text_snippet?: string;
+    segments?: NormalizedRect[];
+  }>;
+}
+
+interface QuestionPageCandidate {
+  pageNumber: number;
+  detectedQuestionCount: number | null;
+  questionRegions: SegmentedQuestionRegion[];
+  qualityIssues: string[];
+}
+
 const QUESTION_REGION_SCHEMA = {
   type: "object",
   additionalProperties: false,
@@ -80,9 +109,12 @@ const QUESTION_SEGMENT_SCHEMA = {
       items: {
         type: "object",
         additionalProperties: false,
-        required: ["page_number", "question_regions"],
+        required: ["page_number", "detected_question_count", "question_regions"],
         properties: {
           page_number: { type: "number" },
+          detected_question_count: {
+            anyOf: [{ type: "number" }, { type: "null" }],
+          },
           question_regions: {
             type: "array",
             items: QUESTION_REGION_SCHEMA,
@@ -124,18 +156,39 @@ Task:
 - For each input page, detect every real question block on that page.
 - Each block must contain exactly one question stem and its related choices or answer area.
 - Ignore page headers, section headers, page numbers, score labels, and isolated answer choices.
+- Ignore tiny fragments such as only "1 12", answer tables, and decorative labels.
 - Do not merge two different questions into one block.
 - If the page has multiple columns, still separate each question correctly.
 
 Output rules:
 - Return one page entry for every provided page_number.
 - page_number must exactly match the input page_number for that image.
+- detected_question_count must be the number of real questions visible on that page.
 - question_number should be the visible problem number when readable, otherwise null.
 - bounds must be normalized 0..1.
 - bounds must be tight and must not include neighboring questions.
 - Always include the full visible question number, the full stem line, and the full choice row width.
 - Do not cut off the left or right edge of the question content.
 - Sort question_regions by real question number when visible. Otherwise use reading order.
+`;
+
+const QUESTION_SEGMENT_RETRY_PROMPT = `
+You must fix poor segmentation from a previous attempt.
+Return JSON only.
+
+Critical rules:
+- Each question_regions item must represent exactly ONE question.
+- Never merge two different question numbers into one region.
+- Never return tiny OCR fragments (examples to reject: "1 12", isolated boxes, page ornaments).
+- Never return page headers, answer keys, explanation headers, or score tables.
+- If uncertain, omit the region instead of guessing.
+
+Output rules:
+- Return one page entry for every provided page_number.
+- page_number must exactly match the input page_number for that image.
+- detected_question_count must be the number of real questions visible on that page.
+- question_regions must contain only reliable regions.
+- bounds must include full stem and full options for that single question.
 `;
 
 const ANSWER_SEGMENT_PROMPT = `
@@ -200,26 +253,58 @@ async function segmentQuestionPages(
   model: string,
   pages: SegmentRequestPayload["pages"]
 ) {
-  const parsed = await generateGeminiJson<{
-    pages?: Array<{
-      page_number?: number;
-      question_regions?: Array<{
-        question_number?: number | null;
-        bounds?: NormalizedRect;
-        text_snippet?: string;
-      }>;
-    }>;
-  }>({
+  const initialPages = await runQuestionSegmentationCall({
     apiKey,
     model,
-    systemInstruction: QUESTION_SEGMENT_PROMPT,
-    parts: buildBatchParts("questions", pages),
-    responseJsonSchema: QUESTION_SEGMENT_SCHEMA,
-    maxOutputTokens: Math.min(3600, 1200 + pages.length * 320),
-    temperature: 0,
+    pages,
+    prompt: QUESTION_SEGMENT_PROMPT,
+  });
+  const initialCandidates = normalizeQuestionPageResults(initialPages, pages);
+  const invalidPageNumbers = initialCandidates
+    .filter((candidate) => isBlockingQuestionPage(candidate))
+    .map((candidate) => candidate.pageNumber);
+
+  if (invalidPageNumbers.length === 0) {
+    return initialCandidates.map((candidate) => ({
+      pageNumber: candidate.pageNumber,
+      questionRegions: candidate.questionRegions,
+    }));
+  }
+
+  const retryTargets = pages.filter((page) => invalidPageNumbers.includes(page.pageNumber));
+
+  if (retryTargets.length === 0) {
+    return initialCandidates.map((candidate) => ({
+      pageNumber: candidate.pageNumber,
+      questionRegions: candidate.questionRegions,
+    }));
+  }
+
+  const retryPages = await runQuestionSegmentationCall({
+    apiKey,
+    model,
+    pages: retryTargets,
+    prompt: QUESTION_SEGMENT_RETRY_PROMPT,
+  });
+  const retryCandidates = normalizeQuestionPageResults(retryPages, retryTargets);
+  const retryMap = new Map<number, QuestionPageCandidate>(
+    retryCandidates.map((candidate) => [candidate.pageNumber, candidate])
+  );
+
+  const merged = initialCandidates.map((candidate) => {
+    const retryCandidate = retryMap.get(candidate.pageNumber);
+
+    if (!retryCandidate) {
+      return candidate;
+    }
+
+    return isRetryCandidateBetter(candidate, retryCandidate) ? retryCandidate : candidate;
   });
 
-  return normalizeQuestionPageResults(parsed.pages, pages);
+  return merged.map((candidate) => ({
+    pageNumber: candidate.pageNumber,
+    questionRegions: isBlockingQuestionPage(candidate) ? [] : candidate.questionRegions,
+  }));
 }
 
 async function segmentAnswerPages(
@@ -227,17 +312,7 @@ async function segmentAnswerPages(
   model: string,
   pages: SegmentRequestPayload["pages"]
 ) {
-  const parsed = await generateGeminiJson<{
-    pages?: Array<{
-      page_number?: number;
-      answer_anchors?: Array<{
-        question_number?: number | null;
-        bounds?: NormalizedRect;
-        text_snippet?: string;
-        segments?: NormalizedRect[];
-      }>;
-    }>;
-  }>({
+  const parsed = await generateGeminiJson<{ pages?: RawAnswerPage[] }>({
     apiKey,
     model,
     systemInstruction: ANSWER_SEGMENT_PROMPT,
@@ -248,6 +323,30 @@ async function segmentAnswerPages(
   });
 
   return normalizeAnswerPageResults(parsed.pages, pages);
+}
+
+async function runQuestionSegmentationCall({
+  apiKey,
+  model,
+  pages,
+  prompt,
+}: {
+  apiKey: string;
+  model: string;
+  pages: SegmentRequestPayload["pages"];
+  prompt: string;
+}) {
+  const parsed = await generateGeminiJson<{ pages?: RawQuestionPage[] }>({
+    apiKey,
+    model,
+    systemInstruction: prompt,
+    parts: buildBatchParts("questions", pages),
+    responseJsonSchema: QUESTION_SEGMENT_SCHEMA,
+    maxOutputTokens: Math.min(3600, 1200 + pages.length * 320),
+    temperature: 0,
+  });
+
+  return parsed.pages;
 }
 
 function buildBatchParts(
@@ -277,8 +376,16 @@ function normalizeQuestionPageResults(
   value: unknown,
   requestedPages: SegmentRequestPayload["pages"]
 ) {
-  const pageMap = new Map<number, SegmentedQuestionRegion[]>(
-    requestedPages.map((page) => [page.pageNumber, []])
+  const pageMap = new Map<number, QuestionPageCandidate>(
+    requestedPages.map((page) => [
+      page.pageNumber,
+      {
+        pageNumber: page.pageNumber,
+        detectedQuestionCount: null,
+        questionRegions: [],
+        qualityIssues: ["empty_regions"],
+      } satisfies QuestionPageCandidate,
+    ])
   );
 
   for (const item of Array.isArray(value) ? value : []) {
@@ -286,10 +393,7 @@ function normalizeQuestionPageResults(
       continue;
     }
 
-    const candidate = item as {
-      page_number?: number;
-      question_regions?: unknown;
-    };
+    const candidate = item as RawQuestionPage;
     const pageNumber =
       typeof candidate.page_number === "number" && Number.isFinite(candidate.page_number)
         ? candidate.page_number
@@ -299,13 +403,23 @@ function normalizeQuestionPageResults(
       continue;
     }
 
-    pageMap.set(pageNumber, normalizeQuestionRegions(candidate.question_regions));
+    const detectedQuestionCount =
+      typeof candidate.detected_question_count === "number" &&
+      Number.isFinite(candidate.detected_question_count) &&
+      candidate.detected_question_count >= 0
+        ? Math.round(candidate.detected_question_count)
+        : null;
+    const questionRegions = normalizeQuestionRegions(candidate.question_regions);
+
+    pageMap.set(pageNumber, {
+      pageNumber,
+      detectedQuestionCount,
+      questionRegions,
+      qualityIssues: assessQuestionPageQuality({ pageNumber, detectedQuestionCount, questionRegions }),
+    });
   }
 
-  return requestedPages.map((page) => ({
-    pageNumber: page.pageNumber,
-    questionRegions: pageMap.get(page.pageNumber) ?? [],
-  }));
+  return requestedPages.map((page) => pageMap.get(page.pageNumber)!);
 }
 
 function normalizeAnswerPageResults(
@@ -359,7 +473,7 @@ function normalizeQuestionRegions(value: unknown) {
     };
     const bounds = normalizeRect(candidate.bounds);
 
-    if (!bounds) {
+    if (!bounds || isVerySmallRegion(bounds)) {
       continue;
     }
 
@@ -389,7 +503,7 @@ function normalizeQuestionRegions(value: unknown) {
     return left.bounds.y - right.bounds.y || left.bounds.x - right.bounds.x;
   });
 
-  return postProcessQuestionRegions(dedupeQuestionRegions(sorted));
+  return postProcessQuestionRegions(dedupeQuestionRegions(sorted)).filter(isReliableQuestionRegion);
 }
 
 function normalizeAnswerAnchors(value: unknown) {
@@ -470,6 +584,10 @@ function normalizeRect(value: unknown) {
   return { x, y, width, height };
 }
 
+function isVerySmallRegion(bounds: NormalizedRect) {
+  return bounds.width < 0.14 || bounds.height < 0.07 || bounds.width * bounds.height < 0.018;
+}
+
 function clampNumber(value: unknown, min: number, max: number) {
   if (typeof value !== "number" || !Number.isFinite(value)) {
     return min;
@@ -532,19 +650,27 @@ function postProcessQuestionRegions(regions: SegmentedQuestionRegion[]) {
 
     columnRegions.forEach((region, index) => {
       const next = columnRegions[index + 1];
-      const fullLeft = Math.max(0.02, column.left - 0.01);
-      const fullRight = Math.min(0.98, column.right + 0.01);
-      const paddedTop = Math.max(0.02, region.bounds.y - Math.max(0.018, region.bounds.height * 0.12));
-      const naturalBottom = Math.min(
-        0.97,
-        region.bounds.y + region.bounds.height + Math.max(0.045, region.bounds.height * 0.22)
-      );
-      const maxBottom = next ? Math.max(paddedTop + 0.12, next.bounds.y - 0.018) : 0.97;
-      const bottom = Math.min(maxBottom, Math.max(naturalBottom, region.bounds.y + region.bounds.height + 0.02));
+      const columnWidth = Math.max(0.2, column.right - column.left);
+      const shouldExpandToColumn = region.bounds.width < Math.max(0.34, columnWidth * 0.66);
+      const paddedLeft = shouldExpandToColumn ? column.left - 0.008 : region.bounds.x - 0.012;
+      const paddedRight = shouldExpandToColumn
+        ? column.right + 0.008
+        : region.bounds.x + region.bounds.width + 0.012;
+      const paddedTop = Math.max(0.02, region.bounds.y - Math.min(0.02, region.bounds.height * 0.12));
+      const naturalBottom = Math.min(0.97, region.bounds.y + region.bounds.height + Math.max(0.028, region.bounds.height * 0.14));
+      const maxBottom = next ? Math.max(paddedTop + 0.11, next.bounds.y - 0.012) : 0.97;
+      const bottom = Math.min(maxBottom, Math.max(naturalBottom, region.bounds.y + region.bounds.height + 0.018));
+      const provisionalWidth = Math.max(0.2, paddedRight - paddedLeft);
+      const maxAllowedWidth =
+        columns.length > 1 ? Math.min(0.74, columnWidth + 0.08) : 0.96;
+      const centeredX = paddedLeft + provisionalWidth / 2;
+      const clampedWidth = Math.min(provisionalWidth, maxAllowedWidth);
+      const left = Math.max(0.02, centeredX - clampedWidth / 2);
+      const right = Math.min(0.98, left + clampedWidth);
       const bounds = normalizeRect({
-        x: fullLeft,
+        x: left,
         y: paddedTop,
-        width: fullRight - fullLeft,
+        width: right - left,
         height: bottom - paddedTop,
       });
 
@@ -704,7 +830,9 @@ function rectContainment(left: NormalizedRect, right: NormalizedRect) {
 }
 
 function inferQuestionColumnsFromRegions(regions: SegmentedQuestionRegion[]) {
-  const groups = regions
+  const seedRegions = regions.filter((region) => region.bounds.width <= 0.72);
+  const sourceRegions = seedRegions.length >= 2 ? seedRegions : regions;
+  const groups = sourceRegions
     .map((region) => ({
       region,
       center: region.bounds.x + region.bounds.width / 2,
@@ -755,4 +883,209 @@ function resolveQuestionColumn(region: SegmentedQuestionRegion, columns: Array<{
   const center = region.bounds.x + region.bounds.width / 2;
 
   return [...columns].sort((left, right) => Math.abs(center - left.center) - Math.abs(center - right.center))[0];
+}
+
+function assessQuestionPageQuality(page: {
+  pageNumber: number;
+  detectedQuestionCount: number | null;
+  questionRegions: SegmentedQuestionRegion[];
+}) {
+  const issues: string[] = [];
+  const regionCount = page.questionRegions.length;
+
+  if (regionCount === 0) {
+    issues.push("empty_regions");
+  }
+
+  if (
+    page.detectedQuestionCount !== null &&
+    (Math.abs(page.detectedQuestionCount - regionCount) >= 2 ||
+      (page.detectedQuestionCount > 0 && regionCount === 0))
+  ) {
+    issues.push("count_mismatch");
+  }
+
+  const suspiciousCount = page.questionRegions.filter((region) => !isReliableQuestionRegion(region)).length;
+
+  if (regionCount > 0 && suspiciousCount / regionCount >= 0.45) {
+    issues.push("suspicious_fragments");
+  }
+
+  const mergedCount = page.questionRegions.filter((region) => isLikelyMergedQuestionRegion(region)).length;
+
+  if (mergedCount > 0) {
+    issues.push("merged_regions");
+  }
+
+  const numbered = page.questionRegions
+    .map((region) => region.questionNumber)
+    .filter((questionNumber): questionNumber is number => questionNumber !== null);
+  const uniqueCount = new Set<number>(numbered).size;
+
+  if (numbered.length >= 4 && uniqueCount / numbered.length < 0.7) {
+    issues.push("duplicate_numbers");
+  }
+
+  if (regionCount >= 3 && numbered.length === 0) {
+    issues.push("missing_numbers");
+  }
+
+  return issues;
+}
+
+function isRetryCandidateBetter(current: QuestionPageCandidate, retry: QuestionPageCandidate) {
+  if (retry.qualityIssues.length !== current.qualityIssues.length) {
+    return retry.qualityIssues.length < current.qualityIssues.length;
+  }
+
+  if (retry.questionRegions.length !== current.questionRegions.length) {
+    return retry.questionRegions.length > current.questionRegions.length;
+  }
+
+  return totalRegionArea(retry.questionRegions) >= totalRegionArea(current.questionRegions);
+}
+
+function totalRegionArea(regions: SegmentedQuestionRegion[]) {
+  return regions.reduce((sum, region) => sum + rectArea(region.bounds), 0);
+}
+
+function isBlockingQuestionPage(candidate: QuestionPageCandidate) {
+  return candidate.qualityIssues.some((issue) =>
+    ["empty_regions", "count_mismatch", "suspicious_fragments", "merged_regions"].includes(issue)
+  );
+}
+
+function isReliableQuestionRegion(region: SegmentedQuestionRegion) {
+  const snippet = normalizeSnippet(region.textSnippet);
+  const compact = snippet.replace(/\s+/g, "");
+  const area = rectArea(region.bounds);
+  const choiceMarkerCount = countChoiceMarkers(snippet);
+  const hasQuestionSignal = hasQuestionSignalToken(snippet, region.questionNumber);
+  const looksLikeDigitsOnly = /^[\d\s.:/-]+$/.test(compact);
+  const hasMathOrLanguage = /[\uAC00-\uD7A3A-Za-z=+\-*/^]/u.test(snippet);
+
+  if (!snippet) {
+    return false;
+  }
+
+  if (looksLikeDigitsOnly && compact.length <= 10) {
+    return false;
+  }
+
+  if (isLikelyAnswerOrHeaderSnippet(snippet)) {
+    return false;
+  }
+
+  if (region.bounds.height < 0.095 || area < 0.052) {
+    return false;
+  }
+
+  if (region.bounds.width < 0.22) {
+    return false;
+  }
+
+  if (choiceMarkerCount === 0 && !hasQuestionSignal && compact.length <= 12) {
+    return false;
+  }
+
+  if (choiceMarkerCount < 2 && !hasQuestionSignal && !hasMathOrLanguage) {
+    return false;
+  }
+
+  return true;
+}
+
+function isLikelyMergedQuestionRegion(region: SegmentedQuestionRegion) {
+  const snippet = normalizeSnippet(region.textSnippet);
+  const questionSignals = countQuestionStemSignals(snippet);
+
+  if (questionSignals >= 2 && region.bounds.width >= 0.56) {
+    return true;
+  }
+
+  if (region.bounds.width >= 0.85 && region.bounds.height >= 0.2 && questionSignals >= 1) {
+    return true;
+  }
+
+  return false;
+}
+
+function countQuestionStemSignals(text: string) {
+  if (!text) {
+    return 0;
+  }
+
+  const compact = text.replace(/\s+/g, " ");
+  const matches = [...compact.matchAll(/(?:^|\s)(\d{1,3})\s*[.)]/g)];
+  const unique = new Set<number>();
+
+  for (const match of matches) {
+    const value = Number(match[1]);
+
+    if (Number.isFinite(value) && value >= 1 && value <= 200) {
+      unique.add(value);
+    }
+  }
+
+  return unique.size;
+}
+
+function hasQuestionSignalToken(snippet: string, questionNumber: number | null) {
+  const compact = snippet.replace(/\s+/g, " ");
+  const dense = snippet.replace(/\s+/g, "");
+
+  if (questionNumber !== null) {
+    const strictPattern = new RegExp(`(?:^|\\s)${questionNumber}\\s*[.)]`);
+    const prefixedPattern = new RegExp(`^${questionNumber}(?:\\D|$)`);
+
+    if (strictPattern.test(snippet) || prefixedPattern.test(dense)) {
+      return true;
+    }
+  }
+
+  return (
+    /(?:^|\s)\d{1,3}\s*[.)]/.test(snippet) ||
+    /^\d{1,3}\D/.test(dense) ||
+    /\[\d+[^\]]*\]/.test(snippet) ||
+    /(?:\uBB38\uC81C|\uB2E4\uC74C|\uAD6C\uD558)/u.test(compact)
+  );
+}
+
+function isLikelyAnswerOrHeaderSnippet(snippet: string) {
+  const compact = snippet.replace(/\s+/g, "");
+
+  if (/(?:\uC815\uB2F5|\uD574\uC124|\uB2F5\uC548|\uD574\uB2F5|\uC815\uB2F5\uD45C|\uD574\uC124\uD45C)/u.test(compact)) {
+    return true;
+  }
+
+  if (/^(\d+\s*){2,}$/.test(compact) && compact.length <= 10) {
+    return true;
+  }
+
+  return false;
+}
+
+function normalizeSnippet(value: string | undefined) {
+  return typeof value === "string" ? value.replace(/\s+/g, " ").trim() : "";
+}
+
+function countChoiceMarkers(snippet: string) {
+  if (!snippet) {
+    return 0;
+  }
+
+  const normalized = snippet
+    .replace(/\u2460/gu, " 1 ")
+    .replace(/\u2461/gu, " 2 ")
+    .replace(/\u2462/gu, " 3 ")
+    .replace(/\u2463/gu, " 4 ")
+    .replace(/\u2464/gu, " 5 ");
+  const matches = normalized.match(/(?:^|[\s(])(?:1|2|3|4|5)(?:[.)\-:]|(?=\s)|(?=[^\d]))/gu);
+  const unique = new Set(
+    (matches ?? [])
+      .map((match) => match.match(/[1-5]/)?.[0] ?? "")
+      .filter(Boolean)
+  );
+
+  return unique.size;
 }

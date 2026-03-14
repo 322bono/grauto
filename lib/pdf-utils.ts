@@ -112,7 +112,7 @@ export async function extractPdfQuestionRegions(source: File | ArrayBuffer | Uin
     const viewport = page.getViewport({ scale: 1 });
     const textContent = await page.getTextContent();
     const fragments = textContent.items.flatMap((item) => toPositionedFragments(item, viewport.width, viewport.height));
-    regionsByPage[pageNumber] = buildQuestionRegionsFromFragments(fragments);
+    regionsByPage[pageNumber] = buildQuestionRegionsFromFragments(fragments).filter(isLikelyQuestionRegion);
   }
 
   return regionsByPage;
@@ -502,7 +502,7 @@ function buildQuestionRegionsFromFragments(fragments: PositionedTextFragment[]) 
     });
   });
 
-  return regions.slice(0, 24);
+  return regions.filter(isLikelyQuestionRegion).slice(0, 24);
 }
 
 function buildAnswerRegionsFromFragments(fragments: PositionedTextFragment[]) {

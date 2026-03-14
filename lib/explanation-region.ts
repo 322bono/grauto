@@ -12,14 +12,8 @@ export function resolveLocalExplanationRects(
   answerPage?: AnswerPagePayload | null,
   displayQuestionNumber?: number | null
 ) {
-  const anchorRects = resolveAnchorBasedRects(answerPage, displayQuestionNumber ?? question.questionNumber);
-
-  if (anchorRects.length > 0) {
-    return anchorRects;
-  }
-
-  const fallbackRect = resolveFallbackExplanationRect(question, pageQuestions);
-  return fallbackRect ? [fallbackRect] : [];
+  void pageQuestions;
+  return resolveAnchorBasedRects(answerPage, displayQuestionNumber ?? question.questionNumber);
 }
 
 export function resolveLocalExplanationRect(

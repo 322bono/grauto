@@ -16,8 +16,6 @@ import {
   canvasToCompressedDataUrl,
   clonePdfBytes,
   cropCanvasToCompressedDataUrl,
-  extractPdfAnswerRegions,
-  extractPdfQuestionRegions,
   extractPdfTextSnippets,
   isLikelyQuestionRegion,
 } from "@/lib/pdf-utils";
@@ -40,7 +38,10 @@ interface PdfAreaSelectorProps {
   onPagesChange?: (pages: AnswerPagePayload[]) => void;
 }
 
-const SEGMENT_BATCH_SIZE = 8;
+const SEGMENT_MAX_BATCH_PAGES = 20;
+const SEGMENT_MAX_BATCH_BYTES = 2_200_000;
+const SEGMENT_REQUEST_DEBOUNCE_MS = 520;
+const SEGMENT_RETRY_DEFAULT_MS = 30_000;
 
 export function PdfAreaSelector({
   title,
@@ -55,8 +56,6 @@ export function PdfAreaSelector({
   const pageHostRefs = useRef<Record<number, HTMLDivElement | null>>({});
   const canvasRefs = useRef<Record<number, HTMLCanvasElement | null>>({});
   const selectedPagesRef = useRef<number[]>([]);
-  const localQuestionRegionsRef = useRef<Record<number, DetectedQuestionSlice[]> | null>(null);
-  const localAnswerAnchorsRef = useRef<Record<number, PageNumberAnchor[]> | null>(null);
 
   const [numPages, setNumPages] = useState(0);
   const [containerWidth, setContainerWidth] = useState(680);
@@ -67,6 +66,7 @@ export function PdfAreaSelector({
   const [answerAnchorsByPage, setAnswerAnchorsByPage] = useState<Record<number, PageNumberAnchor[]>>({});
   const [selectedPages, setSelectedPages] = useState<number[]>([]);
   const [segmentStatusByPage, setSegmentStatusByPage] = useState<Record<string, "idle" | "loading" | "ready" | "error">>({});
+  const [segmentRetryAt, setSegmentRetryAt] = useState<number | null>(null);
 
   useEffect(() => {
     selectedPagesRef.current = selectedPages;
@@ -94,10 +94,9 @@ export function PdfAreaSelector({
     setQuestionRegionsByPage({});
     setAnswerAnchorsByPage({});
     setSegmentStatusByPage({});
+    setSegmentRetryAt(null);
     canvasRefs.current = {};
     pageHostRefs.current = {};
-    localQuestionRegionsRef.current = null;
-    localAnswerAnchorsRef.current = null;
 
     if (!file) {
       return;
@@ -159,9 +158,65 @@ export function PdfAreaSelector({
     }));
   }
 
+  function markPagesIdle(pageNumbers: number[]) {
+    setSegmentStatusByPage((current) => ({
+      ...current,
+      ...Object.fromEntries(pageNumbers.map((pageNumber) => [getSegmentStatusKey(pageNumber), "idle"])),
+    }));
+  }
+
+  function parseRetryDelayMs(message: string) {
+    const retryMatch =
+      message.match(/retry in\s+(\d+(?:\.\d+)?)s/i) ??
+      message.match(/retryDelay["']?\s*[:=]\s*["']?(\d+)s/i);
+
+    if (!retryMatch) {
+      return null;
+    }
+
+    const seconds = Number(retryMatch[1]);
+
+    if (!Number.isFinite(seconds) || seconds <= 0) {
+      return null;
+    }
+
+    return Math.ceil(seconds * 1000);
+  }
+
+  function isQuotaErrorMessage(message: string) {
+    return /429|RESOURCE_EXHAUSTED|quota/i.test(message);
+  }
+
+  function estimateSegmentPageBytes(page: SegmentRequestPayload["pages"][number]) {
+    return page.pageImageDataUrl.length + (page.textSnippet?.length ?? 0) + 64;
+  }
+
+  function pickSegmentBatch(pages: SegmentRequestPayload["pages"]) {
+    const sortedPages = [...pages].sort((left, right) => left.pageNumber - right.pageNumber);
+    const picked: SegmentRequestPayload["pages"] = [];
+    let totalBytes = 0;
+
+    for (const page of sortedPages) {
+      const nextBytes = estimateSegmentPageBytes(page);
+      const tooManyPages = picked.length >= SEGMENT_MAX_BATCH_PAGES;
+      const tooLargePayload =
+        picked.length > 0 && totalBytes + nextBytes > SEGMENT_MAX_BATCH_BYTES;
+
+      if (tooManyPages || tooLargePayload) {
+        break;
+      }
+
+      picked.push(page);
+      totalBytes += nextBytes;
+    }
+
+    return picked;
+  }
+
   function applySegmentedPages(payload: SegmentResponsePayload) {
     if (payload.mode === "questions") {
       const invalidPageNumbers: number[] = [];
+      const emptyPageNumbers: number[] = [];
 
       setQuestionRegionsByPage((current) => {
         const next = { ...current };
@@ -178,13 +233,20 @@ export function PdfAreaSelector({
             invalidPageNumbers.push(page.pageNumber);
           }
 
+          if (mappedRegions.length === 0) {
+            emptyPageNumbers.push(page.pageNumber);
+          }
+
           next[page.pageNumber] = validRegions;
         }
 
         return next;
       });
 
-      return invalidPageNumbers;
+      return {
+        invalidPageNumbers,
+        emptyPageNumbers,
+      };
     }
 
     setAnswerAnchorsByPage((current) => {
@@ -202,86 +264,41 @@ export function PdfAreaSelector({
       return next;
     });
 
-    return [] as number[];
-  }
-
-  async function applyLocalSegmentation(pageNumbers: number[]) {
-    if (!documentData || pageNumbers.length === 0) {
-      return false;
-    }
-
-    try {
-      if (selectionMode === "region") {
-        if (!localQuestionRegionsRef.current) {
-          localQuestionRegionsRef.current = await extractPdfQuestionRegions(clonePdfBytes(documentData));
-        }
-
-        const localPages = localQuestionRegionsRef.current;
-
-        setQuestionRegionsByPage((current) => {
-          const next = { ...current };
-
-          for (const pageNumber of pageNumbers) {
-            next[pageNumber] = localPages[pageNumber] ?? [];
-          }
-
-          return next;
-        });
-      } else {
-        if (!localAnswerAnchorsRef.current) {
-          localAnswerAnchorsRef.current = await extractPdfAnswerRegions(clonePdfBytes(documentData));
-        }
-
-        const localPages = localAnswerAnchorsRef.current;
-
-        setAnswerAnchorsByPage((current) => {
-          const next = { ...current };
-
-          for (const pageNumber of pageNumbers) {
-            next[pageNumber] = localPages[pageNumber] ?? [];
-          }
-
-          return next;
-        });
-      }
-
-      markPagesStatus(pageNumbers, "ready");
-      setLoadError("");
-      return true;
-    } catch {
-      return false;
-    }
+    return {
+      invalidPageNumbers: [] as number[],
+      emptyPageNumbers: [] as number[],
+    };
   }
 
   async function requestSegmentationBatch(pageNumbers: number[]) {
     const pendingPages: Array<SegmentRequestPayload["pages"][number] | null> = pageNumbers.map((pageNumber) => {
-        const canvas = canvasRefs.current[pageNumber];
-        const status = getSegmentStatus(pageNumber);
+      const canvas = canvasRefs.current[pageNumber];
+      const status = getSegmentStatus(pageNumber);
 
-        if (!canvas || status === "loading" || status === "ready") {
-          return null;
-        }
+      if (!canvas || status === "loading" || status === "ready") {
+        return null;
+      }
 
-        const pageImageDataUrl = canvasToCompressedDataUrl(canvas, {
-          maxWidth: 960,
-          mimeType: "image/jpeg",
-          quality: 0.78,
-        });
-
-        if (!pageImageDataUrl) {
-          return null;
-        }
-
-        return {
-          pageNumber,
-          pageImageDataUrl,
-          textSnippet: textSnippets[pageNumber] ?? "",
-        };
+      const pageImageDataUrl = canvasToCompressedDataUrl(canvas, {
+        maxWidth: 960,
+        mimeType: "image/jpeg",
+        quality: 0.78,
       });
 
-    const pages = pendingPages
-      .filter((page): page is SegmentRequestPayload["pages"][number] => page !== null)
-      .slice(0, SEGMENT_BATCH_SIZE);
+      if (!pageImageDataUrl) {
+        return null;
+      }
+
+      return {
+        pageNumber,
+        pageImageDataUrl,
+        textSnippet: textSnippets[pageNumber] ?? "",
+      };
+    });
+
+    const pages = pickSegmentBatch(
+      pendingPages.filter((page): page is SegmentRequestPayload["pages"][number] => page !== null)
+    );
 
     if (pages.length === 0) {
       return;
@@ -309,20 +326,30 @@ export function PdfAreaSelector({
       }
 
       const payload = (await response.json()) as SegmentResponsePayload;
-      const invalidPageNumbers = applySegmentedPages(payload);
+      const { invalidPageNumbers, emptyPageNumbers } = applySegmentedPages(payload);
       markPagesStatus(
         pages.map((page) => page.pageNumber),
         "ready"
       );
       setLoadError("");
+      setSegmentRetryAt(null);
 
-      if (invalidPageNumbers.length > 0) {
-        await applyLocalSegmentation(invalidPageNumbers);
+      const blockedPageNumbers = [...new Set([...invalidPageNumbers, ...emptyPageNumbers])];
+
+      if (blockedPageNumbers.length > 0) {
+          markPagesStatus(blockedPageNumbers, "error");
+          setLoadError(
+            "AI가 일부 페이지에서 문항을 안정적으로 분리하지 못했습니다. 해당 페이지를 다시 선택하거나 페이지 수를 줄여 재시도해 주세요."
+          );
       }
     } catch (error) {
-      const restored = await applyLocalSegmentation(pages.map((page) => page.pageNumber));
+      const message = error instanceof Error ? error.message : "AI segmentation failed.";
 
-      if (restored) {
+      if (isQuotaErrorMessage(message)) {
+        const retryDelayMs = parseRetryDelayMs(message) ?? SEGMENT_RETRY_DEFAULT_MS;
+        markPagesIdle(pages.map((page) => page.pageNumber));
+        setSegmentRetryAt(Date.now() + retryDelayMs);
+        setLoadError(`분당 요청 제한으로 잠시 대기합니다. ${Math.ceil(retryDelayMs / 1000)}초 뒤 자동 재시도합니다.`);
         return;
       }
 
@@ -339,6 +366,17 @@ export function PdfAreaSelector({
   }
 
   useEffect(() => {
+    if (segmentRetryAt && Date.now() < segmentRetryAt) {
+      const waitMs = Math.max(120, segmentRetryAt - Date.now() + 40);
+      const retryTimer = window.setTimeout(() => {
+        setSegmentRetryAt(null);
+      }, waitMs);
+
+      return () => {
+        window.clearTimeout(retryTimer);
+      };
+    }
+
     const hasLoadingPage = selectedPages.some((pageNumber) => getSegmentStatus(pageNumber) === "loading");
 
     if (hasLoadingPage) {
@@ -355,8 +393,14 @@ export function PdfAreaSelector({
       return;
     }
 
-    void requestSegmentationBatch(pendingPages);
-  }, [selectedPages, selectionMode, segmentStatusByPage, textSnippets]);
+    const debounceTimer = window.setTimeout(() => {
+      void requestSegmentationBatch(pendingPages);
+    }, SEGMENT_REQUEST_DEBOUNCE_MS);
+
+    return () => {
+      window.clearTimeout(debounceTimer);
+    };
+  }, [selectedPages, selectionMode, segmentStatusByPage, textSnippets, segmentRetryAt]);
 
   const selectedQuestionCount = useMemo(
     () =>
@@ -434,12 +478,7 @@ export function PdfAreaSelector({
           }
 
           if (!cancelled) {
-            onRegionsChange(
-              nextRegions.map((region, index) => ({
-                ...region,
-                displayOrder: index + 1,
-              }))
-            );
+            onRegionsChange(normalizeQuestionSelectionOrder(nextRegions));
           }
         } finally {
           void pdfDocument.destroy();
@@ -556,8 +595,58 @@ export function PdfAreaSelector({
     return 132;
   }, [containerWidth]);
 
+  function normalizeQuestionSelectionOrder(regions: SelectedQuestionRegionPayload[]) {
+    if (regions.length === 0) {
+      return [];
+    }
+
+    const sorted = [...regions].sort((left, right) => {
+      if (left.pageNumber !== right.pageNumber) {
+        return left.pageNumber - right.pageNumber;
+      }
+
+      return left.bounds.y - right.bounds.y || left.bounds.x - right.bounds.x;
+    });
+    const hintValues = sorted
+      .map((region) => region.questionNumberHint)
+      .filter((hint): hint is number => typeof hint === "number" && Number.isFinite(hint));
+    const trustHints = shouldTrustQuestionHints(hintValues, sorted.length);
+
+    return sorted.map((region, index) => ({
+      ...region,
+      displayOrder: index + 1,
+      questionNumberHint: trustHints ? region.questionNumberHint ?? null : index + 1,
+    }));
+  }
+
+  function shouldTrustQuestionHints(hints: number[], totalCount: number) {
+    if (totalCount <= 1) {
+      return true;
+    }
+
+    if (hints.length < Math.max(2, Math.floor(totalCount * 0.55))) {
+      return false;
+    }
+
+    const uniqueCount = new Set(hints).size;
+
+    if (uniqueCount / hints.length < 0.78) {
+      return false;
+    }
+
+    let backwards = 0;
+
+    for (let index = 1; index < hints.length; index += 1) {
+      if (hints[index] < hints[index - 1]) {
+        backwards += 1;
+      }
+    }
+
+    return backwards <= Math.max(1, Math.floor(hints.length * 0.2));
+  }
+
   function buildQuickRegions(pageNumbers: number[]) {
-    return [...pageNumbers]
+    const quickRegions = [...pageNumbers]
       .sort((a, b) => a - b)
       .flatMap((pageNumber) => {
         const canvas = canvasRefs.current[pageNumber];
@@ -589,11 +678,9 @@ export function PdfAreaSelector({
             } satisfies SelectedQuestionRegionPayload,
           ];
         });
-      })
-      .map((region, index) => ({
-        ...region,
-        displayOrder: index + 1,
-      }));
+      });
+
+    return normalizeQuestionSelectionOrder(quickRegions);
   }
 
   function buildQuickPages(pageNumbers: number[]) {
