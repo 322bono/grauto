@@ -19,6 +19,7 @@ import {
   extractPdfAnswerRegions,
   extractPdfQuestionRegions,
   extractPdfTextSnippets,
+  isLikelyQuestionRegion,
 } from "@/lib/pdf-utils";
 
 ensurePdfWorker();
@@ -160,21 +161,30 @@ export function PdfAreaSelector({
 
   function applySegmentedPages(payload: SegmentResponsePayload) {
     if (payload.mode === "questions") {
+      const invalidPageNumbers: number[] = [];
+
       setQuestionRegionsByPage((current) => {
         const next = { ...current };
 
         for (const page of payload.pages) {
-          next[page.pageNumber] = (page.questionRegions ?? []).map((region) => ({
+          const mappedRegions = (page.questionRegions ?? []).map((region) => ({
             questionNumber: region.questionNumber ?? null,
             bounds: region.bounds,
             textSnippet: region.textSnippet ?? textSnippets[page.pageNumber] ?? "",
           }));
+          const validRegions = mappedRegions.filter(isLikelyQuestionRegion);
+
+          if (mappedRegions.length > 0 && validRegions.length === 0) {
+            invalidPageNumbers.push(page.pageNumber);
+          }
+
+          next[page.pageNumber] = validRegions;
         }
 
         return next;
       });
 
-      return;
+      return invalidPageNumbers;
     }
 
     setAnswerAnchorsByPage((current) => {
@@ -191,6 +201,8 @@ export function PdfAreaSelector({
 
       return next;
     });
+
+    return [] as number[];
   }
 
   async function applyLocalSegmentation(pageNumbers: number[]) {
@@ -297,12 +309,16 @@ export function PdfAreaSelector({
       }
 
       const payload = (await response.json()) as SegmentResponsePayload;
-      applySegmentedPages(payload);
+      const invalidPageNumbers = applySegmentedPages(payload);
       markPagesStatus(
         pages.map((page) => page.pageNumber),
         "ready"
       );
       setLoadError("");
+
+      if (invalidPageNumbers.length > 0) {
+        await applyLocalSegmentation(invalidPageNumbers);
+      }
     } catch (error) {
       const restored = await applyLocalSegmentation(pages.map((page) => page.pageNumber));
 

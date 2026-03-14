@@ -74,9 +74,17 @@ function resolveAnchorBasedRects(answerPage: AnswerPagePayload | null | undefine
     .filter((anchor) => typeof anchor.questionNumber === "number" && Number.isFinite(anchor.questionNumber))
     .map((anchor) => ({
       questionNumber: anchor.questionNumber as number,
-      bounds: normalizeRect(anchor.bounds)
+      bounds: normalizeRect(anchor.bounds),
+      segments: Array.isArray(anchor.segments)
+        ? anchor.segments
+            .map((segment) => normalizeRect(segment))
+            .filter((segment): segment is NormalizedRect => Boolean(segment))
+        : []
     }))
-    .filter((anchor): anchor is { questionNumber: number; bounds: NormalizedRect } => Boolean(anchor.bounds));
+    .filter(
+      (anchor): anchor is { questionNumber: number; bounds: NormalizedRect; segments: NormalizedRect[] } =>
+        Boolean(anchor.bounds)
+    );
 
   if (anchors.length === 0) {
     return [] as NormalizedRect[];
@@ -88,14 +96,8 @@ function resolveAnchorBasedRects(answerPage: AnswerPagePayload | null | undefine
     return [] as NormalizedRect[];
   }
 
-  if (Array.isArray((currentAnchor as { segments?: NormalizedRect[] }).segments)) {
-    const segmentRects = (currentAnchor as { segments?: NormalizedRect[] }).segments
-      ?.map((segment) => normalizeRect(segment))
-      .filter((segment): segment is NormalizedRect => Boolean(segment));
-
-    if (segmentRects && segmentRects.length > 0) {
-      return segmentRects;
-    }
+  if (currentAnchor.segments.length > 0) {
+    return currentAnchor.segments;
   }
 
   const columns = inferAnchorColumns(anchors.map((anchor) => anchor.bounds));

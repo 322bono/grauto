@@ -249,9 +249,10 @@ function normalizeQuestion(
   index: number
 ): QuestionResult {
   const resolvedQuestionNumber =
-    selection.displayOrder ??
     selection.questionNumberHint ??
-    (Number.isFinite(raw?.question_number) ? Number(raw.question_number) : index + 1);
+    (Number.isFinite(raw?.question_number) ? Number(raw.question_number) : null) ??
+    selection.displayOrder ??
+    index + 1;
   const answerPageMatch = resolveMatchedAnswerPage(
     payload.answerPages,
     Number.isFinite(raw?.matched_answer_page_number) ? Number(raw.matched_answer_page_number) : null,
@@ -321,8 +322,9 @@ function normalizeQuestion(
 }
 
 function buildFallbackResponse(payload: GradeRequestPayload, reason: string): GradeResponsePayload {
+  const failure = classifyFallbackFailure(reason);
   const questions: QuestionResult[] = payload.questionSelections.map((selection, index) => {
-    const questionNumber = selection.displayOrder ?? selection.questionNumberHint ?? index + 1;
+    const questionNumber = selection.questionNumberHint ?? selection.displayOrder ?? index + 1;
     const answerPageMatch = resolveMatchedAnswerPage(
       payload.answerPages,
       payload.answerPages[index]?.pageNumber ?? null,
@@ -333,7 +335,7 @@ function buildFallbackResponse(payload: GradeRequestPayload, reason: string): Gr
       selectionId: selection.id,
       questionNumber,
       detectedHeaderText: selection.extractedTextSnippet || `문제 ${questionNumber}`,
-      questionType: "short-answer",
+      questionType: inferFallbackQuestionType(payload, selection, answerPageMatch.pageNumber, questionNumber),
       studentAnswer: "",
       correctAnswer: "",
       isCorrect: false,
@@ -352,10 +354,10 @@ function buildFallbackResponse(payload: GradeRequestPayload, reason: string): Gr
         detectedMarks: [],
       },
       feedback: {
-        mistakeReason: "실제 정오 판정을 완료하지 못했습니다.",
-        explanation: "일시적인 모델 응답 문제로 이번 채점은 자동 해설을 완성하지 못했습니다. 다시 채점하면 정상 인식될 수 있습니다.",
-        recommendedReview: "환경 변수를 확인한 뒤 다시 채점해 주세요.",
-        conceptTags: ["설정 확인 필요"],
+        mistakeReason: failure.mistakeReason,
+        explanation: failure.explanation,
+        recommendedReview: failure.recommendedReview,
+        conceptTags: failure.conceptTags,
       },
     };
   });
@@ -366,6 +368,149 @@ function buildFallbackResponse(payload: GradeRequestPayload, reason: string): Gr
     summary: buildSummary(questions),
     questions,
   };
+}
+
+function classifyFallbackFailure(rawReason: string) {
+  const normalizedReason = extractFailureReason(rawReason);
+  const shortDetail = summarizeFailureReason(normalizedReason);
+
+  if (/GEMINI_API_KEY.*missing/i.test(normalizedReason)) {
+    return {
+      mistakeReason: "Gemini API 키가 설정되지 않아 실제 채점을 시작하지 못했습니다.",
+      explanation: "서버에서 Gemini 호출 자체가 실행되지 않았습니다. 환경 변수에 GEMINI_API_KEY가 비어 있거나 배포 환경에 반영되지 않은 상태입니다.",
+      recommendedReview: "로컬 .env 또는 Vercel 환경 변수의 GEMINI_API_KEY를 다시 확인해 주세요.",
+      conceptTags: ["API 키 확인"],
+    };
+  }
+
+  if (/RESOURCE_EXHAUSTED|quota|rate.?limit|free_tier|RetryInfo|too many requests/i.test(normalizedReason)) {
+    return {
+      mistakeReason: "Gemini 무료 요청 한도에 걸려 이번 채점 요청이 거절되었습니다.",
+      explanation: appendFailureDetail(
+        "모델 응답 문제가 아니라 quota 문제입니다. 무료 등급의 분당 요청 수를 넘어서 채점이 중간에 멈췄습니다.",
+        shortDetail
+      ),
+      recommendedReview: "잠시 기다렸다가 다시 시도하거나, 한 번에 보내는 요청 수를 줄여 주세요.",
+      conceptTags: ["무료 한도 초과"],
+    };
+  }
+
+  if (/FUNCTION_PAYLOAD_TOO_LARGE|Request Entity Too Large|payload too large|request too large|request body too large/i.test(normalizedReason)) {
+    return {
+      mistakeReason: "채점 요청에 포함된 이미지나 데이터가 너무 커서 서버가 요청을 거절했습니다.",
+      explanation: appendFailureDetail(
+        "모델 해설 생성 전에 요청 크기 제한에 걸린 상태입니다. 선택한 페이지 수가 많거나 이미지가 너무 커서 한 번에 처리되지 않았습니다.",
+        shortDetail
+      ),
+      recommendedReview: "문항 수나 답지 페이지 수를 줄이거나 이미지를 더 가볍게 만들어 다시 채점해 주세요.",
+      conceptTags: ["요청 크기 초과"],
+    };
+  }
+
+  if (/JSON parse failed|Unexpected end of JSON|double-quoted property name|Expected .* in JSON|JSON 텍스트를 찾지 못했습니다/i.test(normalizedReason)) {
+    return {
+      mistakeReason: "Gemini가 채점 결과를 깨진 JSON 형식으로 반환해 자동 판정을 끝까지 조립하지 못했습니다.",
+      explanation: appendFailureDetail(
+        "채점 요청은 나갔지만 모델 응답 형식이 망가져 결과를 읽어오지 못했습니다. 즉 정답 판정 로직보다 응답 파싱 단계에서 실패한 것입니다.",
+        shortDetail
+      ),
+      recommendedReview: "같은 요청을 다시 시도해 보거나, 선택 문항 수를 줄여 응답 길이를 낮춘 뒤 다시 채점해 주세요.",
+      conceptTags: ["응답 형식 오류"],
+    };
+  }
+
+  if (/fetch failed|network|timeout|timed out|deadline|ECONNRESET|socket hang up/i.test(normalizedReason)) {
+    return {
+      mistakeReason: "Gemini 서버 응답을 안정적으로 받지 못해 채점을 완료하지 못했습니다.",
+      explanation: appendFailureDetail(
+        "모델이 완전한 응답을 돌려주기 전에 네트워크 또는 시간 제한 문제로 요청이 끊겼습니다.",
+        shortDetail
+      ),
+      recommendedReview: "잠시 후 다시 시도해 주세요. 같은 문제가 반복되면 네트워크 상태와 배포 환경을 함께 확인해 주세요.",
+      conceptTags: ["네트워크 오류"],
+    };
+  }
+
+  return {
+    mistakeReason: "자동 채점 결과를 완성하지 못했습니다.",
+    explanation: appendFailureDetail(
+      "모델 응답을 끝까지 해석하지 못해 이번 채점은 fallback 결과로 표시되었습니다.",
+      shortDetail
+    ),
+    recommendedReview: "같은 요청을 다시 시도해 보고, 반복되면 입력 문항 수나 답지 페이지 구성을 줄여 주세요.",
+    conceptTags: ["자동 채점 실패"],
+  };
+}
+
+function extractFailureReason(rawReason: string) {
+  const trimmed = rawReason.trim();
+
+  if (!trimmed) {
+    return "Unknown failure";
+  }
+
+  try {
+    const parsed = JSON.parse(trimmed) as {
+      error?: {
+        message?: string;
+        status?: string;
+        code?: number;
+      };
+      message?: string;
+    };
+
+    const pieces = [
+      typeof parsed.error?.status === "string" ? parsed.error.status : "",
+      typeof parsed.error?.message === "string" ? parsed.error.message : "",
+      typeof parsed.message === "string" ? parsed.message : "",
+    ].filter(Boolean);
+
+    if (pieces.length > 0) {
+      return pieces.join(" | ");
+    }
+  } catch {
+    // Keep the original reason when the message is not JSON.
+  }
+
+  return trimmed;
+}
+
+function summarizeFailureReason(reason: string) {
+  return reason.replace(/\s+/g, " ").trim().slice(0, 180);
+}
+
+function appendFailureDetail(message: string, detail: string) {
+  if (!detail || detail === "Unknown failure") {
+    return message;
+  }
+
+  return `${message} 세부 원인: ${detail}.`;
+}
+
+function inferFallbackQuestionType(
+  payload: GradeRequestPayload,
+  selection: GradeRequestPayload["questionSelections"][number],
+  matchedAnswerPageNumber: number | null,
+  questionNumber: number
+) {
+  const matchedAnswerPage =
+    matchedAnswerPageNumber !== null
+      ? payload.answerPages.find((page) => page.pageNumber === matchedAnswerPageNumber) ?? null
+      : null;
+  const selectionText = normalizeReadableText(selection.extractedTextSnippet, "");
+  const answerText = normalizeReadableText(matchedAnswerPage?.extractedTextSnippet, "");
+  const hasMatchingAnchor = Boolean(
+    matchedAnswerPage?.answerAnchors?.some((anchor) => anchor.questionNumber === questionNumber)
+  );
+
+  return inferQuestionType({
+    rawQuestionType: "short-answer",
+    detectedHeaderText: selectionText,
+    textHint: [selectionText, answerText].filter(Boolean).join(" "),
+    studentAnswer: "",
+    correctAnswer: "",
+    detectedMarks: hasMatchingAnchor ? ["choice"] : [],
+  });
 }
 
 function normalizeQuestionType(value: unknown): QuestionType {
@@ -390,19 +535,30 @@ function inferQuestionType(input: {
 
   const textPool = [input.detectedHeaderText, input.textHint].filter(Boolean).join(" ");
   const hasChoiceGlyphs = /[\u2460-\u2473\u2776-\u277f]/u.test(textPool);
-  const hasChoicePattern = countChoiceMarkers(textPool) >= 3;
+  const choiceMarkerCount = countChoiceMarkers(textPool);
+  const hasChoicePattern = choiceMarkerCount >= 3;
+  const hasDenseChoiceSequence = hasChoiceSequence(textPool);
   const numericChoiceAnswer = isChoiceAnswer(input.studentAnswer) || isChoiceAnswer(input.correctAnswer);
   const hasChoiceMark = input.detectedMarks.some((mark) => /check|circle|slash|mark|choice|v/i.test(mark));
+  const looksLikeObjectivePrompt = /(고르시오|알맞은것|옳은것|보기에서|다음중|다음 중)/.test(textPool.replace(/\s+/g, ""));
 
-  if (hasChoiceGlyphs || hasChoicePattern) {
+  if (hasChoiceGlyphs || hasChoicePattern || hasDenseChoiceSequence) {
     return "multiple-choice";
   }
 
-  if (numericChoiceAnswer && hasChoiceMark) {
+  if (numericChoiceAnswer && (hasChoiceMark || choiceMarkerCount >= 2 || looksLikeObjectivePrompt)) {
     return "multiple-choice";
   }
 
   if (numericChoiceAnswer && textPool.length >= 16) {
+    return "multiple-choice";
+  }
+
+  if (hasChoiceMark && choiceMarkerCount >= 2) {
+    return "multiple-choice";
+  }
+
+  if (looksLikeObjectivePrompt && choiceMarkerCount >= 2) {
     return "multiple-choice";
   }
 
@@ -486,8 +642,40 @@ function countChoiceMarkers(value: string) {
     return 0;
   }
 
-  const matches = value.match(/[\u2460-\u2464]|(?:^|[\s(])(?:1|2|3|4|5)(?:[.)]|(?=\s))/gu);
-  return matches?.length ?? 0;
+  const normalized = value
+    .replace(/[\u2460]/gu, " 1 ")
+    .replace(/[\u2461]/gu, " 2 ")
+    .replace(/[\u2462]/gu, " 3 ")
+    .replace(/[\u2463]/gu, " 4 ")
+    .replace(/[\u2464]/gu, " 5 ");
+  const matches = normalized.match(/(?:^|[\s(])(?:1|2|3|4|5)(?:[.)\-:]|(?=\s)|(?=[^\d]))/gu);
+  const unique = new Set(
+    (matches ?? [])
+      .map((match) => match.match(/[1-5]/)?.[0] ?? "")
+      .filter(Boolean)
+  );
+
+  return unique.size;
+}
+
+function hasChoiceSequence(value: string) {
+  if (!value) {
+    return false;
+  }
+
+  const compact = value
+    .replace(/[\u2460]/gu, "1")
+    .replace(/[\u2461]/gu, "2")
+    .replace(/[\u2462]/gu, "3")
+    .replace(/[\u2463]/gu, "4")
+    .replace(/[\u2464]/gu, "5")
+    .replace(/\s+/g, "")
+    .replace(/[^\d().\-]/g, "");
+
+  return (
+    /1[.)-]?2[.)-]?3[.)-]?4(?:[.)-]?5)?/.test(compact) ||
+    /1[.)].{0,18}2[.)].{0,18}3[.)]/.test(compact)
+  );
 }
 
 function clamp(value: number, min: number, max: number) {

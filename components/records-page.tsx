@@ -292,21 +292,15 @@ export function RecordsPage() {
         </div>
       </header>
 
-      <section className="records-hero">
-        <div>
-          <h1>채점 기록</h1>
-          <p>문제 PDF, 답지 PDF, 문항별 채점 결과와 해설 이미지를 다시 확인할 수 있는 기록 공간입니다.</p>
+      <section className="records-header-card">
+        <h1>채점 기록</h1>
+        <div className="button-row">
+          <span className="status warn">로컬 {localRecords.length}</span>
+          {authUser ? <span className="status ok">클라우드 {cloudRecords.length}</span> : null}
         </div>
       </section>
 
       <section className="records-section stack">
-        <div className="selector-head">
-          <div>
-            <h2 className="section-title">기록 목록</h2>
-            <p className="subtle">카드에서 결과 보기를 누르면 아래에 상세 리포트가 열립니다.</p>
-          </div>
-        </div>
-
         <div className="record-sheet-list">
           {localRecords.map((record) => (
             <article className="record-sheet-card" key={`local-${record.id}`}>
@@ -359,7 +353,7 @@ export function RecordsPage() {
           ))}
 
           {localRecords.length === 0 && cloudOnlyRecords.length === 0 ? (
-            <div className="empty">아직 저장된 채점 기록이 없습니다. 메인 화면에서 PDF를 업로드하고 채점하면 여기에 쌓입니다.</div>
+            <div className="empty">저장된 채점 기록이 없습니다.</div>
           ) : null}
         </div>
       </section>
@@ -370,9 +364,6 @@ export function RecordsPage() {
             <div className="selector-head">
               <div>
                 <h2 className="section-title">{selectedRecord.metadata.examName || "선택한 채점 기록"}</h2>
-                <p className="subtle">
-                  문항별 정오 수정, 추가 분석 요청, 해설 이미지 확인을 한 번에 다시 볼 수 있습니다.
-                </p>
               </div>
               <div className="button-row">
                 <span className="status warn">정답 {selectedRecord.result.summary.correctCount}</span>

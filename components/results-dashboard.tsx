@@ -1,11 +1,11 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { exportWrongAnswerPdf } from "@/lib/export-note";
+import { exportWrongAnswerPdf, printWrongAnswerNote } from "@/lib/export-note";
 import { resolveLocalExplanationRects } from "@/lib/explanation-region";
 import { cropImageDataUrlSegments } from "@/lib/image-crop";
 import { clampBoundingBox, renderCropStyle } from "@/lib/pdf-utils";
-import { normalizeReadableText } from "@/lib/text-quality";
+import { stripNoticeText } from "@/lib/text-quality";
 import type {
   AnswerPagePayload,
   GradeResponsePayload,
@@ -31,6 +31,15 @@ interface ViewerState {
   title: string;
 }
 
+interface WrongNoteEntry {
+  question: QuestionResult;
+  selection?: SelectedQuestionRegionPayload;
+  answerPage?: AnswerPagePayload;
+  analysis: ReturnType<typeof normalizeAnalysis>;
+  displayQuestionNumber: number;
+  explanationRects: NormalizedRect[];
+}
+
 export function ResultsDashboard({
   result,
   questionSelections,
@@ -39,7 +48,7 @@ export function ResultsDashboard({
   onManualOverride,
   onRequestAnalysis,
 }: ResultsDashboardProps) {
-  const noteRef = useRef<HTMLDivElement | null>(null);
+  const printNoteRef = useRef<HTMLDivElement | null>(null);
   const [viewer, setViewer] = useState<ViewerState | null>(null);
   const [loadingAnalysisId, setLoadingAnalysisId] = useState<string | null>(null);
 
@@ -48,13 +57,15 @@ export function ResultsDashboard({
     [questionSelections]
   );
   const answerPageMap = useMemo(() => new Map(answerPages.map((page) => [page.pageNumber, page])), [answerPages]);
+  const getActualQuestionNumber = (question: QuestionResult, selection?: SelectedQuestionRegionPayload | null) =>
+    selection?.questionNumberHint ?? question.questionNumber ?? selection?.displayOrder ?? Number.MAX_SAFE_INTEGER;
   const sortedQuestions = useMemo(
     () =>
       [...result.questions].sort((left, right) => {
         const leftSelection = selectionMap.get(left.selectionId);
         const rightSelection = selectionMap.get(right.selectionId);
-        const leftOrder = leftSelection?.displayOrder ?? left.questionNumber ?? Number.MAX_SAFE_INTEGER;
-        const rightOrder = rightSelection?.displayOrder ?? right.questionNumber ?? Number.MAX_SAFE_INTEGER;
+        const leftOrder = getActualQuestionNumber(left, leftSelection);
+        const rightOrder = getActualQuestionNumber(right, rightSelection);
 
         return leftOrder - rightOrder;
       }),
@@ -65,8 +76,7 @@ export function ResultsDashboard({
 
     sortedQuestions.forEach((question, index) => {
       const selection = selectionMap.get(question.selectionId);
-      const displayQuestionNumber =
-        selection?.displayOrder ?? question.questionNumber ?? selection?.questionNumberHint ?? index + 1;
+      const displayQuestionNumber = getActualQuestionNumber(question, selection) || index + 1;
       const targetQuestionNumber = selection?.questionNumberHint ?? question.questionNumber ?? displayQuestionNumber;
       const matchedPage = question.matchedAnswerPageNumber
         ? answerPageMap.get(question.matchedAnswerPageNumber)
@@ -110,6 +120,29 @@ export function ResultsDashboard({
     return nextMap;
   }, [resolvedPageNumberMap, sortedQuestions]);
   const wrongQuestions = sortedQuestions.filter((question) => !question.isCorrect);
+  const wrongNoteEntries = useMemo<WrongNoteEntry[]>(
+    () =>
+      wrongQuestions.map((question, index) => {
+        const selection = selectionMap.get(question.selectionId);
+        const answerPage = getResolvedAnswerPage(question);
+        const resolvedPageNumber = resolvedPageNumberMap.get(question.selectionId);
+        const pageQuestions = resolvedPageNumber ? pageQuestionMap.get(resolvedPageNumber) ?? [question] : [question];
+        const analysis = normalizeAnalysis(question.deepAnalysis);
+        const displayQuestionNumber = getDisplayQuestionNumber(question, index);
+        const explanationTargetNumber = selection?.questionNumberHint ?? question.questionNumber ?? displayQuestionNumber;
+        const explanationRects = resolveLocalExplanationRects(question, pageQuestions, answerPage, explanationTargetNumber);
+
+        return {
+          question,
+          selection,
+          answerPage,
+          analysis,
+          displayQuestionNumber,
+          explanationRects,
+        };
+      }),
+    [pageQuestionMap, resolvedPageNumberMap, selectionMap, sortedQuestions, wrongQuestions]
+  );
 
   async function handleAnalysisClick(selectionId: string) {
     if (!onRequestAnalysis) {
@@ -127,7 +160,7 @@ export function ResultsDashboard({
 
   function getDisplayQuestionNumber(question: QuestionResult, fallbackIndex: number) {
     const selection = selectionMap.get(question.selectionId);
-    return selection?.displayOrder ?? question.questionNumber ?? selection?.questionNumberHint ?? fallbackIndex + 1;
+    return getActualQuestionNumber(question, selection) || fallbackIndex + 1;
   }
 
   function getResolvedAnswerPage(question: QuestionResult) {
@@ -148,14 +181,22 @@ export function ResultsDashboard({
               type="button"
               className="cta secondary"
               onClick={async () => {
-                if (noteRef.current) {
-                  await exportWrongAnswerPdf(noteRef.current, `${examName || "시험"}-오답노트`);
+                if (printNoteRef.current) {
+                  await exportWrongAnswerPdf(printNoteRef.current, `${examName || "시험"}-오답노트`);
                 }
               }}
             >
               오답 노트 PDF
             </button>
-            <button type="button" className="cta ghost" onClick={() => window.print()}>
+            <button
+              type="button"
+              className="cta ghost"
+              onClick={async () => {
+                if (printNoteRef.current) {
+                  await printWrongAnswerNote(printNoteRef.current, `${examName || "시험"} 오답노트`);
+                }
+              }}
+            >
               인쇄
             </button>
           </div>
@@ -226,9 +267,6 @@ export function ResultsDashboard({
               <div className="result-card-head">
                 <div>
                   <h3 className="result-card-title">{displayQuestionNumber}번 문제</h3>
-                  <p className="result-card-subtitle">
-                    {sanitizeText(question.detectedHeaderText, `페이지 ${selection?.pageNumber ?? "-"} 기준으로 인식했습니다.`)}
-                  </p>
                 </div>
                 <div className="button-row">
                   <StatusBadge type={question.isCorrect ? "correct" : "wrong"} />
@@ -349,55 +387,58 @@ export function ResultsDashboard({
         })}
       </div>
 
-      <section className="card pad print-note-host results-note-host">
+      <section className="card pad results-note-host">
         <div className="selector-head">
           <div>
             <h2 className="section-title">오답 노트</h2>
-            <p className="subtle">틀린 문제만 다시 보면서 해설과 이유를 한 번에 정리할 수 있습니다.</p>
           </div>
         </div>
 
-        <div className="note-sheet results-note-sheet" ref={noteRef}>
-          {wrongQuestions.length > 0 ? (
-            wrongQuestions.map((question, index) => {
-              const selection = selectionMap.get(question.selectionId);
-              const answerPage = getResolvedAnswerPage(question);
-              const resolvedPageNumber = resolvedPageNumberMap.get(question.selectionId);
-              const pageQuestions = resolvedPageNumber ? pageQuestionMap.get(resolvedPageNumber) ?? [question] : [question];
-              const analysis = normalizeAnalysis(question.deepAnalysis);
-              const displayQuestionNumber = getDisplayQuestionNumber(question, index);
-              const explanationTargetNumber = selection?.questionNumberHint ?? question.questionNumber ?? displayQuestionNumber;
-              const explanationRects = resolveLocalExplanationRects(question, pageQuestions, answerPage, explanationTargetNumber);
-
-              return (
-                <div className="note-card results-note-card" key={`note-${question.selectionId}`} data-note-card="true">
-                  <h3>{displayQuestionNumber}번</h3>
-                  <div className="result-lower-grid">
-                    <div className="stack">
-                      {selection ? <img alt={`${displayQuestionNumber}번 문제`} src={selection.snapshotDataUrl} /> : null}
-                      <p className="result-note-copy">
-                        {sanitizeText(analysis?.oneLineSummary || question.feedback.mistakeReason, "오답 이유를 다시 확인해 보세요.")}
-                      </p>
-                    </div>
-                    <div className="stack">
-                      {answerPage && explanationRects.length > 0 ? (
-                        <CroppedImage imageDataUrl={answerPage.pageImageDataUrl} rects={explanationRects} />
-                      ) : answerPage ? (
-                        <img alt={`${displayQuestionNumber}번 해설`} src={answerPage.pageImageDataUrl} />
-                      ) : null}
-                      <p className="result-note-copy">
-                        {sanitizeText(analysis?.answerSheetBasis || question.feedback.explanation, "답지 해설을 다시 읽고 풀이 순서를 정리해 보세요.")}
-                      </p>
-                    </div>
+        <div className="note-sheet results-note-sheet">
+          {wrongNoteEntries.length > 0 ? (
+            wrongNoteEntries.map((entry) => (
+              <div className="note-card results-note-card" key={`screen-note-${entry.question.selectionId}`}>
+                <div className="results-note-card-head">
+                  <h3>{entry.displayQuestionNumber}번</h3>
+                  <span className="results-mini-pill warning">오답</span>
+                </div>
+                <div className="results-note-grid">
+                  <div className="stack">
+                    {entry.selection ? <img alt={`${entry.displayQuestionNumber}번 문제`} src={entry.selection.snapshotDataUrl} /> : null}
+                    <p className="result-note-copy">
+                      {sanitizeText(
+                        entry.analysis?.oneLineSummary || entry.question.feedback.mistakeReason,
+                        "오답 이유를 다시 확인해 보세요."
+                      )}
+                    </p>
+                  </div>
+                  <div className="stack">
+                    {entry.answerPage && entry.explanationRects.length > 0 ? (
+                      <CroppedImage imageDataUrl={entry.answerPage.pageImageDataUrl} rects={entry.explanationRects} />
+                    ) : entry.answerPage ? (
+                      <img alt={`${entry.displayQuestionNumber}번 해설`} src={entry.answerPage.pageImageDataUrl} />
+                    ) : null}
+                    <p className="result-note-copy">
+                      {sanitizeText(
+                        entry.analysis?.answerSheetBasis || entry.question.feedback.explanation,
+                        "답지 해설을 다시 읽고 풀이 순서를 정리해 보세요."
+                      )}
+                    </p>
                   </div>
                 </div>
-              );
-            })
+              </div>
+            ))
           ) : (
             <div className="empty">오답이 없어 오답 노트가 비어 있습니다.</div>
           )}
         </div>
       </section>
+
+      <div className="print-note-render-root" ref={printNoteRef} aria-hidden="true">
+        {wrongNoteEntries.map((entry) => (
+          <PrintNoteCard entry={entry} key={`print-note-${entry.question.selectionId}`} />
+        ))}
+      </div>
 
       {viewer ? (
         <div className="image-viewer-backdrop" onClick={() => setViewer(null)}>
@@ -518,6 +559,103 @@ function StepCard({ step }: { step: QuestionProcessStep }) {
         <p>{sanitizeText(step.detail, sanitizeText(step.summary, ""))}</p>
       </div>
     </div>
+  );
+}
+
+function PrintNoteCard({ entry }: { entry: WrongNoteEntry }) {
+  const {
+    question,
+    selection,
+    answerPage,
+    analysis,
+    displayQuestionNumber,
+    explanationRects,
+  } = entry;
+
+  return (
+    <article className="print-note-page" data-print-note-card="true">
+      <div className="print-note-head">
+        <div>
+          <h3 className="print-note-title">{displayQuestionNumber}번 오답 노트</h3>
+        </div>
+        <div className="print-note-meta">
+          <span className="print-note-pill danger">오답</span>
+          <span className="print-note-pill">{questionTypeLabel(question.questionType)}</span>
+        </div>
+      </div>
+
+      <div className="print-note-grid">
+        <section className="print-note-panel">
+          <strong>문제</strong>
+          {selection ? (
+            <div className="print-note-image">
+              <img alt={`${displayQuestionNumber}번 문제`} src={selection.snapshotDataUrl} />
+            </div>
+          ) : null}
+        </section>
+
+        <section className="print-note-panel">
+          <strong>채점 정보</strong>
+          <div className="print-note-facts">
+            <div className="print-note-fact">
+              <span>학생의 답</span>
+              <strong>{displayAnswer(question.studentAnswer)}</strong>
+            </div>
+            <div className="print-note-fact">
+              <span>정답</span>
+              <strong>{displayAnswer(question.correctAnswer)}</strong>
+            </div>
+            <div className="print-note-fact">
+              <span>판정</span>
+              <strong>{question.isCorrect ? "정답" : "오답"}</strong>
+            </div>
+            <div className="print-note-fact">
+              <span>신뢰도</span>
+              <strong>{confidenceLabel(question.confidence)}</strong>
+            </div>
+          </div>
+          <p className="print-note-copy">
+            {sanitizeText(analysis?.oneLineSummary || question.feedback.mistakeReason, "오답 이유를 다시 확인해 보세요.")}
+          </p>
+        </section>
+
+        <section className="print-note-panel wide">
+          <strong>해설</strong>
+          {answerPage && explanationRects.length > 0 ? (
+            <div className="print-note-image">
+              <CroppedImage imageDataUrl={answerPage.pageImageDataUrl} rects={explanationRects} />
+            </div>
+          ) : answerPage ? (
+            <div className="print-note-image">
+              <img alt={`${displayQuestionNumber}번 해설`} src={answerPage.pageImageDataUrl} />
+            </div>
+          ) : null}
+          <p className="print-note-copy">
+            {sanitizeText(
+              analysis?.answerSheetBasis || question.feedback.explanation,
+              "답지 해설을 다시 읽고 풀이 순서를 정리해 보세요."
+            )}
+          </p>
+        </section>
+
+        {analysis?.processSteps?.length ? (
+          <section className="print-note-panel wide">
+            <strong>오답 분석</strong>
+            <div className="print-step-list">
+              {analysis.processSteps.map((step) => (
+                <div className={`print-step-card ${step.status}`} key={`${question.selectionId}-print-${step.order}`}>
+                  <span className={`print-step-badge ${step.status}`}>{step.order}</span>
+                  <div className="print-step-copy">
+                    <strong>{sanitizeText(step.summary, "단계를 불러오지 못했습니다.")}</strong>
+                    <p>{sanitizeText(step.detail, sanitizeText(step.summary, ""))}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </section>
+        ) : null}
+      </div>
+    </article>
   );
 }
 
@@ -701,7 +839,7 @@ function buildReportQuote(rate: number) {
 }
 
 function sanitizeText(value: string | undefined | null, fallback: string) {
-  const normalized = normalizeReadableText(value ?? "", "");
+  const normalized = stripNoticeText(value ?? "");
 
   if (!normalized) {
     return fallback;

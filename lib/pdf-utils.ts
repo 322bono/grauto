@@ -60,6 +60,12 @@ interface ColumnBand {
   center: number;
 }
 
+interface QuestionRegionLike {
+  questionNumber: number | null;
+  bounds: NormalizedRect;
+  textSnippet?: string;
+}
+
 export function clonePdfBytes(source: Uint8Array) {
   return new Uint8Array(source.slice());
 }
@@ -251,6 +257,71 @@ export function clampBoundingBox(box: NormalizedRect | null): NormalizedRect | n
   const height = Math.min(1 - y, Math.max(0.04, box.height));
 
   return { x, y, width, height };
+}
+
+export function isLikelyQuestionRegion(region: QuestionRegionLike) {
+  const snippetAssessment = assessQuestionSnippet(region.textSnippet ?? "", region.questionNumber);
+  const area = region.bounds.width * region.bounds.height;
+  const isThinStripe = region.bounds.width >= 0.45 && region.bounds.height <= 0.12;
+  const isVerySmall = area < 0.05 || region.bounds.height < 0.085;
+
+  if (!snippetAssessment.textSnippet) {
+    return false;
+  }
+
+  if (snippetAssessment.looksLikeDigitsOnly && snippetAssessment.compactText.length <= 8) {
+    return false;
+  }
+
+  if (snippetAssessment.choiceMarkerCount === 0 && snippetAssessment.compactText.length <= 6) {
+    return false;
+  }
+
+  if ((isThinStripe || isVerySmall) && !snippetAssessment.hasEnoughQuestionSignals) {
+    return false;
+  }
+
+  if (!snippetAssessment.hasEnoughQuestionSignals && snippetAssessment.textSnippet.length < 12) {
+    return false;
+  }
+
+  return true;
+}
+
+export function isLikelyQuestionSnippet(textSnippet: string, questionNumber?: number | null) {
+  return assessQuestionSnippet(textSnippet, questionNumber).isLikely;
+}
+
+function assessQuestionSnippet(textSnippetValue: string, questionNumber?: number | null) {
+  const textSnippet = normalizeReadableText(textSnippetValue, "");
+  const compactText = textSnippet.replace(/\s+/g, "");
+  const choiceMarkerCount = countChoiceMarkers(textSnippet);
+  const startsWithQuestionNumber = new RegExp(`^${questionNumber ?? "\\d{1,3}"}[.)번]?`).test(compactText);
+  const hasScoreLabel = /\[\d+점\]/.test(textSnippet);
+  const hasProblemWords = /(고르시오|다음중|다음 중|알맞은|값은|구하시오|옳은|보기|함수|방정식|삼각형|확률|수학)/.test(textSnippet);
+  const hasMathSymbols = /[=+\-×÷√πxyabc]/i.test(textSnippet);
+  const hasKoreanOrLatin = /[가-힣A-Za-z]/.test(textSnippet);
+  const looksLikeDigitsOnly = /^[\d\s.:/-]+$/.test(compactText);
+  const hasEnoughQuestionSignals =
+    startsWithQuestionNumber ||
+    hasScoreLabel ||
+    choiceMarkerCount >= 2 ||
+    (hasProblemWords && hasKoreanOrLatin) ||
+    (hasMathSymbols && textSnippet.length >= 10);
+  const isLikely =
+    Boolean(textSnippet) &&
+    !(looksLikeDigitsOnly && compactText.length <= 8) &&
+    !(choiceMarkerCount === 0 && compactText.length <= 6) &&
+    (hasEnoughQuestionSignals || textSnippet.length >= 12);
+
+  return {
+    textSnippet,
+    compactText,
+    choiceMarkerCount,
+    looksLikeDigitsOnly,
+    hasEnoughQuestionSignals,
+    isLikely,
+  };
 }
 
 export function detectQuestionBandsFromCanvas(sourceCanvas: HTMLCanvasElement) {

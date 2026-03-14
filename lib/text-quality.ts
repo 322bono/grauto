@@ -34,3 +34,43 @@ export function normalizeReadableText(value: string | null | undefined, fallback
 
   return normalized;
 }
+
+const NOTICE_PATTERNS = [
+  /무단\s*전재/,
+  /재배포는?\s*금지/,
+  /금지됩니다/,
+  /전국연합학력평가/,
+  /교육청\s*주관/,
+  /EBSi/,
+  /해당\s*자료/,
+  /제공됩니다/,
+];
+
+export function stripNoticeText(value: string | null | undefined) {
+  const normalized = normalizeReadableText(value ?? "", "");
+
+  if (!normalized) {
+    return "";
+  }
+
+  const segments = normalized
+    .split(/(?<=[.!?。]|다\.)\s+/)
+    .map((segment) => segment.trim())
+    .filter(Boolean);
+  const filteredSegments = segments.filter((segment) => !NOTICE_PATTERNS.some((pattern) => pattern.test(segment)));
+
+  if (filteredSegments.length > 0) {
+    const cleaned = filteredSegments
+      .join(" ")
+      .replace(/^\d+[.)]?\s*/, "")
+      .trim();
+
+    return /^[\d.)\s]+$/.test(cleaned) ? "" : cleaned;
+  }
+
+  if (NOTICE_PATTERNS.some((pattern) => pattern.test(normalized))) {
+    return "";
+  }
+
+  return normalized;
+}

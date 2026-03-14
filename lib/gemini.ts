@@ -115,15 +115,18 @@ function parseGeminiJsonText<T>(text: string) {
     repairCommonJsonIssues(extractLikelyJson(stripped))
   ].filter((candidate, index, list): candidate is string => Boolean(candidate) && list.indexOf(candidate) === index);
 
+  let lastErrorMessage = "";
+
   for (const candidate of candidates) {
     try {
       return JSON.parse(candidate) as T;
-    } catch {
+    } catch (error) {
+      lastErrorMessage = error instanceof Error ? error.message : "Unknown JSON parse error";
       // Try the next repaired candidate.
     }
   }
 
-  throw new Error("Gemini JSON parse failed after local repair attempts.");
+  throw new Error(`Gemini JSON parse failed after local repair attempts: ${lastErrorMessage}`);
 }
 
 function extractLikelyJson(text: string) {
