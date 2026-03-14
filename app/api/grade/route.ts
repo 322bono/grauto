@@ -247,8 +247,8 @@ function normalizeQuestion(
   const maxScore = Math.max(1, toNumber(raw?.max_score, 1));
   const score = Math.max(0, Math.min(maxScore, toNumber(raw?.score, isCorrect ? maxScore : 0)));
   const resolvedQuestionNumber =
-    selection.questionNumberHint ??
     selection.displayOrder ??
+    selection.questionNumberHint ??
     (Number.isFinite(raw?.question_number) ? Number(raw.question_number) : index + 1);
 
   return {
@@ -295,8 +295,8 @@ function normalizeQuestion(
 function buildFallbackResponse(payload: GradeRequestPayload, reason: string): GradeResponsePayload {
   const questions: QuestionResult[] = payload.questionSelections.map((selection, index) => ({
     selectionId: selection.id,
-    questionNumber: selection.questionNumberHint ?? index + 1,
-    detectedHeaderText: selection.extractedTextSnippet || `문제 ${selection.questionNumberHint ?? index + 1}`,
+    questionNumber: selection.displayOrder ?? selection.questionNumberHint ?? index + 1,
+    detectedHeaderText: selection.extractedTextSnippet || `문제 ${selection.displayOrder ?? selection.questionNumberHint ?? index + 1}`,
     questionType: "short-answer",
     studentAnswer: "",
     correctAnswer: "",

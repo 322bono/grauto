@@ -85,7 +85,7 @@ export function ResultsDashboard({
   function getDisplayQuestionNumber(question: QuestionResult, fallbackIndex: number) {
     const selection = selectionMap.get(question.selectionId);
 
-    return selection?.questionNumberHint ?? selection?.displayOrder ?? question.questionNumber ?? fallbackIndex + 1;
+    return selection?.displayOrder ?? question.questionNumber ?? selection?.questionNumberHint ?? fallbackIndex + 1;
   }
 
   return (
