@@ -250,7 +250,7 @@ function normalizeQuestion(
   const answerPageNumber = payload.answerPages.some((page) => page.pageNumber === raw?.matched_answer_page_number)
     ? raw.matched_answer_page_number
     : (payload.answerPages[0]?.pageNumber ?? null);
-  const questionType = normalizeQuestionType(raw?.question_type);
+  const rawQuestionType = normalizeQuestionType(raw?.question_type);
   const isCorrect = Boolean(raw?.is_correct);
   const maxScore = Math.max(1, toNumber(raw?.max_score, 1));
   const score = Math.max(0, Math.min(maxScore, toNumber(raw?.score, isCorrect ? maxScore : 0)));
@@ -258,6 +258,21 @@ function normalizeQuestion(
     selection.displayOrder ??
     selection.questionNumberHint ??
     (Number.isFinite(raw?.question_number) ? Number(raw.question_number) : index + 1);
+  const normalizedDetectedHeaderText = normalizeReadableText(raw?.detected_header_text, "");
+  const normalizedTextHint = normalizeReadableText(selection.extractedTextSnippet, "");
+  const detectedMarks = Array.isArray(raw?.work_evidence?.detected_marks)
+    ? raw.work_evidence.detected_marks.filter((item: unknown) => typeof item === "string")
+    : [];
+  const normalizedChoiceStudentAnswer = normalizeStudentAnswer(raw?.student_answer, "multiple-choice");
+  const normalizedChoiceCorrectAnswer = normalizeCorrectAnswer(raw?.correct_answer, "multiple-choice");
+  const questionType = inferQuestionType({
+    rawQuestionType,
+    detectedHeaderText: normalizedDetectedHeaderText,
+    textHint: normalizedTextHint,
+    studentAnswer: normalizedChoiceStudentAnswer,
+    correctAnswer: normalizedChoiceCorrectAnswer,
+    detectedMarks
+  });
 
   return {
     selectionId: selection.id,
@@ -343,6 +358,43 @@ function normalizeQuestionType(value: unknown): QuestionType {
   return value === "multiple-choice" || value === "short-answer" || value === "essay" ? value : "short-answer";
 }
 
+function inferQuestionType(input: {
+  rawQuestionType: QuestionType;
+  detectedHeaderText: string;
+  textHint: string;
+  studentAnswer: string;
+  correctAnswer: string;
+  detectedMarks: string[];
+}): QuestionType {
+  if (input.rawQuestionType === "essay") {
+    return "essay";
+  }
+
+  if (input.rawQuestionType === "multiple-choice") {
+    return "multiple-choice";
+  }
+
+  const textPool = [input.detectedHeaderText, input.textHint].filter(Boolean).join(" ");
+  const hasChoiceGlyphs = /[\u2460-\u2473\u2776-\u277F]/u.test(textPool);
+  const hasChoicePattern = countChoiceMarkers(textPool) >= 3;
+  const numericChoiceAnswer = isChoiceAnswer(input.studentAnswer) || isChoiceAnswer(input.correctAnswer);
+  const hasChoiceMark = input.detectedMarks.some((mark) => /check|circle|slash|mark|선택|체크|브이|v/i.test(mark));
+
+  if (hasChoiceGlyphs || hasChoicePattern) {
+    return "multiple-choice";
+  }
+
+  if (numericChoiceAnswer && hasChoiceMark) {
+    return "multiple-choice";
+  }
+
+  if (numericChoiceAnswer && textPool.length >= 16) {
+    return "multiple-choice";
+  }
+
+  return input.rawQuestionType;
+}
+
 function normalizeAuthenticity(value: unknown): WorkAuthenticity {
   return value === "solved" || value === "guessed" || value === "blank" || value === "unclear" ? value : "unclear";
 }
@@ -414,6 +466,19 @@ function normalizeChoiceAnswer(value: string) {
   }
 
   return compact;
+}
+
+function isChoiceAnswer(value: string) {
+  return /^[1-5]$/.test(value.trim());
+}
+
+function countChoiceMarkers(value: string) {
+  if (!value) {
+    return 0;
+  }
+
+  const matches = value.match(/[\u2460-\u2464]|(?:^|[\s(])(?:1|2|3|4|5)(?:[.)]|(?=\s))/gu);
+  return matches?.length ?? 0;
 }
 
 function clamp(value: number, min: number, max: number) {
