@@ -36,6 +36,7 @@ export interface PageNumberAnchor {
   questionNumber: number | null;
   bounds: NormalizedRect;
   textSnippet?: string;
+  segments?: NormalizedRect[];
 }
 
 export interface AnswerPagePayload {
@@ -143,6 +144,39 @@ export interface AnalyzeRequestPayload {
 
 export interface AnalyzeResponsePayload {
   analysis: QuestionDeepAnalysis;
+}
+
+export interface SegmentPageInput {
+  pageNumber: number;
+  pageImageDataUrl: string;
+  textSnippet?: string;
+}
+
+export interface SegmentedQuestionRegion {
+  questionNumber: number | null;
+  bounds: NormalizedRect;
+  textSnippet?: string;
+}
+
+export interface SegmentedAnswerAnchor {
+  questionNumber: number | null;
+  bounds: NormalizedRect;
+  textSnippet?: string;
+  segments?: NormalizedRect[];
+}
+
+export interface SegmentRequestPayload {
+  mode: "questions" | "answers";
+  pages: SegmentPageInput[];
+}
+
+export interface SegmentResponsePayload {
+  mode: "questions" | "answers";
+  pages: Array<{
+    pageNumber: number;
+    questionRegions?: SegmentedQuestionRegion[];
+    answerAnchors?: SegmentedAnswerAnchor[];
+  }>;
 }
 
 export interface StoredExamRecord {

@@ -88,6 +88,16 @@ function resolveAnchorBasedRects(answerPage: AnswerPagePayload | null | undefine
     return [] as NormalizedRect[];
   }
 
+  if (Array.isArray((currentAnchor as { segments?: NormalizedRect[] }).segments)) {
+    const segmentRects = (currentAnchor as { segments?: NormalizedRect[] }).segments
+      ?.map((segment) => normalizeRect(segment))
+      .filter((segment): segment is NormalizedRect => Boolean(segment));
+
+    if (segmentRects && segmentRects.length > 0) {
+      return segmentRects;
+    }
+  }
+
   const columns = inferAnchorColumns(anchors.map((anchor) => anchor.bounds));
   const orderedColumns = [...columns].sort((left, right) => left.x - right.x);
   const currentColumn = resolveAnchorColumn(currentAnchor.bounds, orderedColumns);

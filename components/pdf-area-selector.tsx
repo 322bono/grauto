@@ -5,14 +5,17 @@ import { Document, Page, pdfjs } from "react-pdf";
 import { PLACEHOLDER_IMAGE_DATA_URL } from "@/lib/image-placeholder";
 import { buildPdfDocumentInit, PDF_DOCUMENT_OPTIONS } from "@/lib/pdf-config";
 import { ensurePdfWorker } from "@/lib/pdf-worker";
-import type { AnswerPagePayload, PageNumberAnchor, SelectedQuestionRegionPayload } from "@/lib/types";
+import type {
+  AnswerPagePayload,
+  PageNumberAnchor,
+  SegmentRequestPayload,
+  SegmentResponsePayload,
+  SelectedQuestionRegionPayload
+} from "@/lib/types";
 import {
   canvasToCompressedDataUrl,
   clonePdfBytes,
   cropCanvasToCompressedDataUrl,
-  detectQuestionBandsFromCanvas,
-  extractPdfAnswerRegions,
-  extractPdfQuestionRegions,
   extractPdfTextSnippets
 } from "@/lib/pdf-utils";
 
@@ -56,6 +59,7 @@ export function PdfAreaSelector({
   const [questionRegionsByPage, setQuestionRegionsByPage] = useState<Record<number, DetectedQuestionSlice[]>>({});
   const [answerAnchorsByPage, setAnswerAnchorsByPage] = useState<Record<number, PageNumberAnchor[]>>({});
   const [selectedPages, setSelectedPages] = useState<number[]>([]);
+  const [segmentStatusByPage, setSegmentStatusByPage] = useState<Record<string, "idle" | "loading" | "ready" | "error">>({});
 
   useEffect(() => {
     selectedPagesRef.current = selectedPages;
@@ -82,6 +86,7 @@ export function PdfAreaSelector({
     setTextSnippets({});
     setQuestionRegionsByPage({});
     setAnswerAnchorsByPage({});
+    setSegmentStatusByPage({});
     canvasRefs.current = {};
     pageHostRefs.current = {};
 
@@ -103,16 +108,12 @@ export function PdfAreaSelector({
           setDocumentData(clonePdfBytes(bytes));
 
           try {
-            const [snippets, detectedRegions, detectedAnswerAnchors] = await Promise.all([
-              extractPdfTextSnippets(bytes),
-              selectionMode === "region" ? extractPdfQuestionRegions(bytes) : Promise.resolve({}),
-              selectionMode === "page" ? extractPdfAnswerRegions(bytes) : Promise.resolve({})
-            ]);
+            const snippets = await extractPdfTextSnippets(bytes);
 
             if (!cancelled) {
               setTextSnippets(snippets);
-              setQuestionRegionsByPage(detectedRegions as Record<number, DetectedQuestionSlice[]>);
-              setAnswerAnchorsByPage(detectedAnswerAnchors as Record<number, PageNumberAnchor[]>);
+              setQuestionRegionsByPage({});
+              setAnswerAnchorsByPage({});
             }
           } catch {
             if (!cancelled) {
@@ -138,11 +139,113 @@ export function PdfAreaSelector({
     };
   }, [file, selectionMode]);
 
+  function getSegmentStatusKey(pageNumber: number) {
+    return `${selectionMode}:${pageNumber}`;
+  }
+
+  function getSegmentStatus(pageNumber: number) {
+    return segmentStatusByPage[getSegmentStatusKey(pageNumber)] ?? "idle";
+  }
+
+  async function requestSegmentation(pageNumber: number) {
+    const status = getSegmentStatus(pageNumber);
+    const canvas = canvasRefs.current[pageNumber];
+
+    if (!canvas || status === "loading" || status === "ready") {
+      return;
+    }
+
+    const pageImageDataUrl = canvasToCompressedDataUrl(canvas, {
+      maxWidth: 960,
+      mimeType: "image/jpeg",
+      quality: 0.78
+    });
+
+    if (!pageImageDataUrl) {
+      return;
+    }
+
+    setSegmentStatusByPage((current) => ({
+      ...current,
+      [getSegmentStatusKey(pageNumber)]: "loading"
+    }));
+
+    try {
+      const response = await fetch("/api/segment", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          mode: selectionMode === "region" ? "questions" : "answers",
+          pages: [
+            {
+              pageNumber,
+              pageImageDataUrl,
+              textSnippet: textSnippets[pageNumber] ?? ""
+            }
+          ]
+        } satisfies SegmentRequestPayload)
+      });
+
+      if (!response.ok) {
+        throw new Error(await response.text());
+      }
+
+      const payload = (await response.json()) as SegmentResponsePayload;
+      const segmentedPage = payload.pages.find((page) => page.pageNumber === pageNumber);
+
+      if (selectionMode === "region") {
+        setQuestionRegionsByPage((current) => ({
+          ...current,
+          [pageNumber]:
+            (segmentedPage?.questionRegions ?? []).map((region) => ({
+              questionNumber: region.questionNumber ?? null,
+              bounds: region.bounds,
+              textSnippet: region.textSnippet ?? textSnippets[pageNumber] ?? ""
+            })) ?? []
+        }));
+      } else {
+        setAnswerAnchorsByPage((current) => ({
+          ...current,
+          [pageNumber]:
+            (segmentedPage?.answerAnchors ?? []).map((anchor) => ({
+              questionNumber: anchor.questionNumber ?? null,
+              bounds: anchor.bounds,
+              textSnippet: anchor.textSnippet ?? textSnippets[pageNumber] ?? "",
+              segments: anchor.segments ?? [anchor.bounds]
+            })) ?? []
+        }));
+      }
+
+      setSegmentStatusByPage((current) => ({
+        ...current,
+        [getSegmentStatusKey(pageNumber)]: "ready"
+      }));
+    } catch (error) {
+      setSegmentStatusByPage((current) => ({
+        ...current,
+        [getSegmentStatusKey(pageNumber)]: "error"
+      }));
+      setLoadError(
+        error instanceof Error
+          ? `AI 분리에 실패했습니다. ${error.message}`
+          : "AI 분리에 실패했습니다. 잠시 후 다시 시도해 주세요."
+      );
+    }
+  }
+
+  useEffect(() => {
+    selectedPages.forEach((pageNumber) => {
+      void requestSegmentation(pageNumber);
+    });
+  }, [selectedPages, selectionMode, textSnippets]);
+
   const selectedQuestionCount = useMemo(
     () =>
       selectedPages.reduce((count, pageNumber) => {
         const detectedCount = questionRegionsByPage[pageNumber]?.length ?? 0;
-        return count + Math.max(1, detectedCount);
+        return count + detectedCount;
       }, 0),
     [questionRegionsByPage, selectedPages]
   );
@@ -162,22 +265,7 @@ export function PdfAreaSelector({
       .sort((a, b) => a - b)
       .flatMap((pageNumber) => {
         const canvas = canvasRefs.current[pageNumber];
-        const regionSlices =
-          questionRegionsByPage[pageNumber]?.length > 0
-            ? questionRegionsByPage[pageNumber]
-            : canvas
-              ? detectQuestionBandsFromCanvas(canvas).map((bounds, index) => ({
-                  questionNumber: null,
-                  bounds,
-                  textSnippet: textSnippets[pageNumber] ? `${textSnippets[pageNumber]} #${index + 1}` : ""
-                }))
-              : [
-                  {
-                    questionNumber: null,
-                    bounds: { x: 0.04, y: 0.06, width: 0.92, height: 0.88 },
-                    textSnippet: textSnippets[pageNumber] ?? ""
-                  }
-                ];
+        const regionSlices = questionRegionsByPage[pageNumber] ?? [];
 
         return regionSlices.flatMap((region, regionIndex) => {
           const snapshotDataUrl = canvas
@@ -207,14 +295,12 @@ export function PdfAreaSelector({
         });
       });
 
-    if (quickRegions.length > 0) {
-      onRegionsChange(
-        quickRegions.map((region, index) => ({
-          ...region,
-          displayOrder: index + 1
-        }))
-      );
-    }
+    onRegionsChange(
+      quickRegions.map((region, index) => ({
+        ...region,
+        displayOrder: index + 1
+      }))
+    );
 
     startTransition(() => {
       (async () => {
@@ -239,14 +325,11 @@ export function PdfAreaSelector({
 
             await page.render({ canvasContext: context, viewport }).promise;
 
-            const regionSlices =
-              questionRegionsByPage[pageNumber]?.length > 0
-                ? questionRegionsByPage[pageNumber]
-                : detectQuestionBandsFromCanvas(renderCanvas).map((bounds, index) => ({
-                    questionNumber: null,
-                    bounds,
-                    textSnippet: textSnippets[pageNumber] ? `${textSnippets[pageNumber]} #${index + 1}` : ""
-                  }));
+            const regionSlices = questionRegionsByPage[pageNumber] ?? [];
+
+            if (regionSlices.length === 0) {
+              continue;
+            }
 
             regionSlices.forEach((region, regionIndex) => {
               const snapshotDataUrl = cropCanvasToCompressedDataUrl(renderCanvas, region.bounds, {
@@ -338,9 +421,7 @@ export function PdfAreaSelector({
         ];
       });
 
-    if (quickPages.length > 0) {
-      onPagesChange(quickPages);
-    }
+    onPagesChange(quickPages);
 
     startTransition(() => {
       (async () => {
@@ -437,22 +518,7 @@ export function PdfAreaSelector({
       .sort((a, b) => a - b)
       .flatMap((pageNumber) => {
         const canvas = canvasRefs.current[pageNumber];
-        const regionSlices =
-          questionRegionsByPage[pageNumber]?.length > 0
-            ? questionRegionsByPage[pageNumber]
-            : canvas
-              ? detectQuestionBandsFromCanvas(canvas).map((bounds, index) => ({
-                  questionNumber: null,
-                  bounds,
-                  textSnippet: textSnippets[pageNumber] ? `${textSnippets[pageNumber]} #${index + 1}` : ""
-                }))
-              : [
-                  {
-                    questionNumber: null,
-                    bounds: { x: 0.04, y: 0.06, width: 0.92, height: 0.88 },
-                    textSnippet: textSnippets[pageNumber] ?? ""
-                  }
-                ];
+        const regionSlices = questionRegionsByPage[pageNumber] ?? [];
 
         return regionSlices.flatMap((region, regionIndex) => {
           const snapshotDataUrl = canvas
@@ -561,6 +627,7 @@ export function PdfAreaSelector({
       const current = selectedPagesRef.current;
 
       if (current.includes(pageNumber)) {
+        void requestSegmentation(pageNumber);
         emitQuickSelection(current);
         setSelectedPages([...current]);
       }
