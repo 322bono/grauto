@@ -6,18 +6,35 @@ interface PageColumn {
   width: number;
 }
 
+export function resolveLocalExplanationRects(
+  question: QuestionResult,
+  pageQuestions: QuestionResult[],
+  answerPage?: AnswerPagePayload | null,
+  displayQuestionNumber?: number | null
+) {
+  const anchorRects = resolveAnchorBasedRects(answerPage, displayQuestionNumber ?? question.questionNumber);
+
+  if (anchorRects.length > 0) {
+    return anchorRects;
+  }
+
+  const fallbackRect = resolveFallbackExplanationRect(question, pageQuestions);
+  return fallbackRect ? [fallbackRect] : [];
+}
+
 export function resolveLocalExplanationRect(
   question: QuestionResult,
   pageQuestions: QuestionResult[],
   answerPage?: AnswerPagePayload | null,
   displayQuestionNumber?: number | null
 ): NormalizedRect | null {
-  const anchorRect = resolveAnchorBasedRect(answerPage, displayQuestionNumber ?? question.questionNumber);
+  return resolveLocalExplanationRects(question, pageQuestions, answerPage, displayQuestionNumber)[0] ?? null;
+}
 
-  if (anchorRect) {
-    return anchorRect;
-  }
-
+function resolveFallbackExplanationRect(
+  question: QuestionResult,
+  pageQuestions: QuestionResult[]
+) {
   const normalizedExplanation = normalizeRect(question.explanationRegion);
   const layout = inferPageLayout(pageQuestions);
   const currentColumn = resolveQuestionColumn(question, layout);
@@ -47,9 +64,9 @@ export function resolveLocalExplanationRect(
   });
 }
 
-function resolveAnchorBasedRect(answerPage: AnswerPagePayload | null | undefined, questionNumber: number | null | undefined) {
+function resolveAnchorBasedRects(answerPage: AnswerPagePayload | null | undefined, questionNumber: number | null | undefined) {
   if (!answerPage?.answerAnchors?.length || !questionNumber) {
-    return null;
+    return [] as NormalizedRect[];
   }
 
   const anchors = answerPage.answerAnchors
@@ -62,31 +79,68 @@ function resolveAnchorBasedRect(answerPage: AnswerPagePayload | null | undefined
     .filter((anchor): anchor is { questionNumber: number; bounds: NormalizedRect } => Boolean(anchor.bounds));
 
   if (anchors.length === 0) {
-    return null;
+    return [] as NormalizedRect[];
   }
 
   const currentAnchor = anchors.find((anchor) => anchor.questionNumber === questionNumber);
 
   if (!currentAnchor) {
-    return null;
+    return [] as NormalizedRect[];
   }
 
   const columns = inferAnchorColumns(anchors.map((anchor) => anchor.bounds));
-  const currentColumn = resolveAnchorColumn(currentAnchor.bounds, columns);
-  const nextAnchor = anchors
-    .filter((anchor) => anchor.questionNumber !== currentAnchor.questionNumber)
-    .filter((anchor) => resolveAnchorColumn(anchor.bounds, columns).id === currentColumn.id)
-    .filter((anchor) => anchor.bounds.y > currentAnchor.bounds.y + 0.01)
-    .sort((left, right) => left.bounds.y - right.bounds.y)[0];
-  const top = clamp(currentAnchor.bounds.y, 0.03, 0.93);
-  const bottom = nextAnchor ? clamp(nextAnchor.bounds.y - 0.014, top + 0.08, 0.975) : clamp(top + currentAnchor.bounds.height, top + 0.16, 0.975);
+  const orderedColumns = [...columns].sort((left, right) => left.x - right.x);
+  const currentColumn = resolveAnchorColumn(currentAnchor.bounds, orderedColumns);
+  const currentColumnIndex = orderedColumns.findIndex((column) => column.id === currentColumn.id);
+  const nextAnchor =
+    anchors
+      .filter((anchor) => anchor.questionNumber === questionNumber + 1)
+      .sort((left, right) => left.bounds.y - right.bounds.y)[0] ??
+    anchors
+      .filter((anchor) => anchor.questionNumber > currentAnchor.questionNumber)
+      .sort((left, right) => left.questionNumber - right.questionNumber || left.bounds.y - right.bounds.y)[0];
+  const nextColumn = nextAnchor ? resolveAnchorColumn(nextAnchor.bounds, orderedColumns) : null;
+  const nextColumnIndex = nextColumn ? orderedColumns.findIndex((column) => column.id === nextColumn.id) : -1;
+  const rects: NormalizedRect[] = [];
 
-  return normalizeRect({
-    x: currentColumn.x,
-    y: top,
-    width: currentColumn.width,
-    height: clamp(bottom - top, 0.1, 0.975 - top)
-  });
+  if (!nextAnchor || nextColumnIndex < 0) {
+    rects.push(
+      ...buildSpanningRects({
+        columns: orderedColumns,
+        startColumnIndex: currentColumnIndex,
+        endColumnIndex: orderedColumns.length - 1,
+        startTop: clamp(currentAnchor.bounds.y, 0.03, 0.93),
+        endBottom: 0.975
+      })
+    );
+
+    return rects;
+  }
+
+  if (nextColumn && nextColumn.id === currentColumn.id) {
+    const top = clamp(currentAnchor.bounds.y, 0.03, 0.93);
+    const bottom = clamp(nextAnchor.bounds.y - 0.014, top + 0.08, 0.975);
+    const rect = normalizeRect({
+      x: currentColumn.x,
+      y: top,
+      width: currentColumn.width,
+      height: clamp(bottom - top, 0.1, 0.975 - top)
+    });
+
+    return rect ? [rect] : [];
+  }
+
+  rects.push(
+    ...buildSpanningRects({
+      columns: orderedColumns,
+      startColumnIndex: currentColumnIndex,
+      endColumnIndex: nextColumnIndex,
+      startTop: clamp(currentAnchor.bounds.y, 0.03, 0.93),
+      endBottom: clamp(nextAnchor.bounds.y - 0.014, 0.12, 0.975)
+    })
+  );
+
+  return rects;
 }
 
 function inferPageLayout(pageQuestions: QuestionResult[]) {
@@ -256,6 +310,45 @@ function inferAnchorColumns(anchors: NormalizedRect[]) {
       width: clamp(right - left, 0.18, 0.96 - left)
     } satisfies PageColumn;
   });
+}
+
+function buildSpanningRects({
+  columns,
+  startColumnIndex,
+  endColumnIndex,
+  startTop,
+  endBottom
+}: {
+  columns: PageColumn[];
+  startColumnIndex: number;
+  endColumnIndex: number;
+  startTop: number;
+  endBottom: number;
+}) {
+  const rects: NormalizedRect[] = [];
+
+  for (let index = startColumnIndex; index <= endColumnIndex; index += 1) {
+    const column = columns[index];
+
+    if (!column) {
+      continue;
+    }
+
+    const top = index === startColumnIndex ? startTop : 0.04;
+    const bottom = index === endColumnIndex ? endBottom : 0.975;
+    const rect = normalizeRect({
+      x: column.x,
+      y: top,
+      width: column.width,
+      height: clamp(bottom - top, 0.1, 0.975 - top)
+    });
+
+    if (rect) {
+      rects.push(rect);
+    }
+  }
+
+  return rects;
 }
 
 function resolveAnchorColumn(anchor: NormalizedRect, columns: PageColumn[]) {

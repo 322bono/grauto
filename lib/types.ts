@@ -75,9 +75,17 @@ export interface WorkEvidence {
   detectedMarks: string[];
 }
 
+export interface QuestionProcessStep {
+  order: number;
+  status: "correct" | "incorrect";
+  summary: string;
+  detail?: string;
+}
+
 export interface QuestionDeepAnalysis {
   requestedAt: string;
   reasonSteps?: string[];
+  processSteps?: QuestionProcessStep[];
   answerSheetBasis?: string;
   oneLineSummary?: string;
   logicalGap?: string;

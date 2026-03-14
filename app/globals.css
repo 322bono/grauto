@@ -2136,3 +2136,65 @@ img {
     display: block !important;
   }
 }
+
+.result-step-list {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.result-step-card {
+  display: grid;
+  grid-template-columns: 34px 1fr;
+  gap: 12px;
+  align-items: start;
+  padding: 12px 14px;
+  border-radius: 18px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.result-step-card.correct {
+  border-color: rgba(143, 209, 79, 0.32);
+  background: rgba(143, 209, 79, 0.08);
+}
+
+.result-step-card.incorrect {
+  border-color: rgba(255, 107, 107, 0.32);
+  background: rgba(255, 107, 107, 0.08);
+}
+
+.result-step-badge {
+  display: inline-grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 999px;
+  font-weight: 700;
+  color: #fff;
+}
+
+.result-step-badge.correct {
+  background: #67c23a;
+}
+
+.result-step-badge.incorrect {
+  background: #ff6b6b;
+}
+
+.result-step-copy {
+  display: grid;
+  gap: 6px;
+}
+
+.result-step-copy strong {
+  font-size: 0.96rem;
+  line-height: 1.45;
+}
+
+.result-step-copy p {
+  margin: 0;
+  color: rgba(255, 255, 255, 0.72);
+  line-height: 1.55;
+  font-size: 0.92rem;
+}

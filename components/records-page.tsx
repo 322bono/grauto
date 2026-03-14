@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { ResultsDashboard } from "@/components/results-dashboard";
-import { resolveLocalExplanationRect } from "@/lib/explanation-region";
+import { resolveLocalExplanationRects } from "@/lib/explanation-region";
 import { observeAuthUser } from "@/lib/firebase/auth";
 import {
   deleteCloudRecord,
@@ -11,7 +11,7 @@ import {
   subscribeToCloudRecords,
   updateCloudRecordSummary
 } from "@/lib/firebase/cloud-records";
-import { cropImageDataUrl } from "@/lib/image-crop";
+import { cropImageDataUrlSegments } from "@/lib/image-crop";
 import { deleteRecord, listRecords, saveRecord } from "@/lib/local-db";
 import { applyManualOverride } from "@/lib/summary";
 import type {
@@ -222,12 +222,12 @@ export function RecordsPage() {
           ? [question]
           : [];
       const displayQuestionNumber = selection.questionNumberHint ?? question.questionNumber ?? selection.displayOrder ?? 1;
-      const localExplanationRect = question
-        ? resolveLocalExplanationRect(question, pageQuestions, answerPage, displayQuestionNumber)
-        : null;
+      const localExplanationRects = question
+        ? resolveLocalExplanationRects(question, pageQuestions, answerPage, displayQuestionNumber)
+        : [];
       const explanationCropDataUrl =
-        answerPage && localExplanationRect
-          ? await cropImageDataUrl(answerPage.pageImageDataUrl, localExplanationRect)
+        answerPage && localExplanationRects.length > 0
+          ? await cropImageDataUrlSegments(answerPage.pageImageDataUrl, localExplanationRects)
           : null;
 
       const response = await fetch("/api/analyze", {

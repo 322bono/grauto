@@ -2,11 +2,19 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { exportWrongAnswerPdf } from "@/lib/export-note";
-import { resolveLocalExplanationRect } from "@/lib/explanation-region";
-import { cropImageDataUrl } from "@/lib/image-crop";
+import { resolveLocalExplanationRects } from "@/lib/explanation-region";
+import { cropImageDataUrlSegments } from "@/lib/image-crop";
 import { clampBoundingBox, renderCropStyle } from "@/lib/pdf-utils";
 import { normalizeReadableText } from "@/lib/text-quality";
-import type { AnswerPagePayload, GradeResponsePayload, QuestionDeepAnalysis, QuestionResult, SelectedQuestionRegionPayload } from "@/lib/types";
+import type {
+  AnswerPagePayload,
+  GradeResponsePayload,
+  NormalizedRect,
+  QuestionDeepAnalysis,
+  QuestionProcessStep,
+  QuestionResult,
+  SelectedQuestionRegionPayload,
+} from "@/lib/types";
 
 interface ResultsDashboardProps {
   result: GradeResponsePayload;
@@ -17,7 +25,7 @@ interface ResultsDashboardProps {
   onRequestAnalysis?: (selectionId: string) => Promise<void>;
 }
 
-interface ImageViewerState {
+interface ViewerState {
   src: string;
   alt: string;
   title: string;
@@ -29,11 +37,11 @@ export function ResultsDashboard({
   answerPages,
   examName,
   onManualOverride,
-  onRequestAnalysis
+  onRequestAnalysis,
 }: ResultsDashboardProps) {
   const noteRef = useRef<HTMLDivElement | null>(null);
+  const [viewer, setViewer] = useState<ViewerState | null>(null);
   const [loadingAnalysisId, setLoadingAnalysisId] = useState<string | null>(null);
-  const [viewer, setViewer] = useState<ImageViewerState | null>(null);
 
   const selectionMap = useMemo(
     () => new Map(questionSelections.map((selection) => [selection.id, selection])),
@@ -85,7 +93,6 @@ export function ResultsDashboard({
 
   function getDisplayQuestionNumber(question: QuestionResult, fallbackIndex: number) {
     const selection = selectionMap.get(question.selectionId);
-
     return selection?.displayOrder ?? question.questionNumber ?? selection?.questionNumberHint ?? fallbackIndex + 1;
   }
 
@@ -126,13 +133,15 @@ export function ResultsDashboard({
           <div className="results-report-stats">
             <MetricLine label="오답" value={`${result.summary.incorrectCount}개`} tone="danger" />
             <MetricLine label="정답" value={`${result.summary.correctCount}개`} tone="info" />
-            <MetricLine label="확인 필요" value={`${result.summary.reviewRequiredCount}개`} tone="success" />
+            <MetricLine label="재확인" value={`${result.summary.reviewRequiredCount}개`} tone="success" />
           </div>
 
           <div className="results-report-copy">
             <p className="results-report-accuracy">정답률 {(result.summary.accuracyRate * 100).toFixed(1)}%</p>
-            <p className="results-report-quote">“{buildReportQuote(result.summary.accuracyRate)}”</p>
-            <p className="results-report-note">{sanitizeText(result.summary.encouragement, "결과를 바탕으로 다음 복습 포인트를 정리해 보세요.")}</p>
+            <p className="results-report-quote">{buildReportQuote(result.summary.accuracyRate)}</p>
+            <p className="results-report-note">
+              {sanitizeText(result.summary.encouragement, "결과를 바탕으로 다음 복습 포인트를 정리해 보세요.")}
+            </p>
             {result.summary.weakAreas.length > 0 ? (
               <div className="results-weak-list">
                 {result.summary.weakAreas.map((area) => (
@@ -168,7 +177,7 @@ export function ResultsDashboard({
           const pageQuestions = question.matchedAnswerPageNumber ? pageQuestionMap.get(question.matchedAnswerPageNumber) ?? [question] : [question];
           const displayQuestionNumber = getDisplayQuestionNumber(question, index);
           const explanationTargetNumber = selection?.questionNumberHint ?? question.questionNumber ?? displayQuestionNumber;
-          const explanationRect = resolveLocalExplanationRect(question, pageQuestions, answerPage, explanationTargetNumber);
+          const explanationRects = resolveLocalExplanationRects(question, pageQuestions, answerPage, explanationTargetNumber);
           const analysis = normalizeAnalysis(question.deepAnalysis);
           const isAnalyzing = loadingAnalysisId === question.selectionId;
 
@@ -178,7 +187,7 @@ export function ResultsDashboard({
                 <div>
                   <h3 className="result-card-title">{displayQuestionNumber}번 문제</h3>
                   <p className="result-card-subtitle">
-                    {sanitizeText(question.detectedHeaderText, `페이지 ${selection?.pageNumber ?? "-"} 기준으로 매칭했습니다.`)}
+                    {sanitizeText(question.detectedHeaderText, `페이지 ${selection?.pageNumber ?? "-"} 기준으로 인식했습니다.`)}
                   </p>
                 </div>
                 <div className="button-row">
@@ -195,7 +204,7 @@ export function ResultsDashboard({
                     ? setViewer({
                         src: selection.snapshotDataUrl,
                         alt: `${displayQuestionNumber}번 문제`,
-                        title: `${displayQuestionNumber}번 문제`
+                        title: `${displayQuestionNumber}번 문제`,
                       })
                     : null
                 }
@@ -222,19 +231,13 @@ export function ResultsDashboard({
                     </div>
                   </div>
 
-                  <ResultFactRow
-                    label="학생의 답"
-                    value={displayAnswer(question.studentAnswer)}
-                    tone={question.isCorrect ? "success" : "danger"}
-                  />
+                  <ResultFactRow label="학생의 답" value={displayAnswer(question.studentAnswer)} tone={question.isCorrect ? "success" : "danger"} />
                   <ResultFactRow label="정답" value={displayAnswer(question.correctAnswer)} tone="success" />
                   <ResultFactRow label="유형" value={questionTypeLabel(question.questionType)} tone="neutral" />
                   <ResultFactRow label="판정" value={question.isCorrect ? "정답" : "오답"} tone={question.isCorrect ? "success" : "danger"} />
                   <ResultFactRow label="신뢰도" value={confidenceLabel(question.confidence)} tone={confidenceTone(question.confidence)} />
 
-                  {renderWorkSummary(question) ? (
-                    <p className="result-work-summary">{renderWorkSummary(question)}</p>
-                  ) : null}
+                  {renderWorkSummary(question) ? <p className="result-work-summary">{renderWorkSummary(question)}</p> : null}
 
                   {!question.isCorrect && onRequestAnalysis ? (
                     <button
@@ -249,32 +252,32 @@ export function ResultsDashboard({
 
                   {analysis ? (
                     <div className="result-analysis-summary">
-                      <strong>오답 포인트</strong>
-                      <p>{sanitizeText(analysis.oneLineSummary, sanitizeText(question.feedback.mistakeReason, "다시 한 번 풀이 순서를 점검해 보세요."))}</p>
+                      <strong>핵심 요약</strong>
+                      <p>{sanitizeText(analysis.oneLineSummary, sanitizeText(question.feedback.mistakeReason, "핵심 조건과 풀이 순서를 다시 확인해 보세요."))}</p>
                     </div>
                   ) : null}
                 </section>
 
                 <section className="result-explanation-panel">
                   <div className="result-panel-head">
-                    <strong>{question.isCorrect ? "문제 해설" : "문항 해설"}</strong>
+                    <strong>문항 해설</strong>
                   </div>
 
-                  {answerPage && explanationRect ? (
+                  {answerPage && explanationRects.length > 0 ? (
                     <button
                       type="button"
                       className="result-explanation-preview"
                       onClick={async () => {
-                        const croppedSrc = await cropImageDataUrl(answerPage.pageImageDataUrl, explanationRect);
+                        const croppedSrc = await cropImageDataUrlSegments(answerPage.pageImageDataUrl, explanationRects);
 
                         setViewer({
                           src: croppedSrc ?? answerPage.pageImageDataUrl,
                           alt: `${displayQuestionNumber}번 해설`,
-                          title: `${displayQuestionNumber}번 해설`
+                          title: `${displayQuestionNumber}번 해설`,
                         });
                       }}
                     >
-                      <CroppedImage imageDataUrl={answerPage.pageImageDataUrl} rect={explanationRect} />
+                      <CroppedImage imageDataUrl={answerPage.pageImageDataUrl} rects={explanationRects} />
                       <span className="result-zoom-hint">눌러서 확대</span>
                     </button>
                   ) : (
@@ -284,19 +287,19 @@ export function ResultsDashboard({
                   <div className="result-explanation-copy">
                     <p>
                       {question.isCorrect
-                        ? sanitizeText(question.feedback.explanation, "답지 해설 이미지를 눌러 자세히 확인해 보세요.")
+                        ? sanitizeText(question.feedback.explanation, "해설 이미지를 눌러 자세히 확인해 보세요.")
                         : sanitizeText(
                             analysis?.answerSheetBasis || question.feedback.explanation,
-                            "답지 해설을 다시 읽고 조건과 순서를 먼저 점검해 보세요."
+                            "답지 해설의 조건과 계산 순서를 다시 비교해 보세요."
                           )}
                     </p>
 
-                    {!question.isCorrect && analysis?.reasonSteps?.length ? (
-                      <ul className="result-reason-list">
-                        {analysis.reasonSteps.slice(0, 3).map((step) => (
-                          <li key={step}>{sanitizeText(step, "")}</li>
+                    {!question.isCorrect && analysis?.processSteps?.length ? (
+                      <div className="result-step-list">
+                        {analysis.processSteps.map((step) => (
+                          <StepCard key={`${question.selectionId}-${step.order}`} step={step} />
                         ))}
-                      </ul>
+                      </div>
                     ) : null}
                   </div>
                 </section>
@@ -310,20 +313,20 @@ export function ResultsDashboard({
         <div className="selector-head">
           <div>
             <h2 className="section-title">오답 노트</h2>
-            <p className="subtle">틀린 문제만 따로 모아 다시 볼 수 있게 정리했습니다.</p>
+            <p className="subtle">틀린 문제만 다시 보면서 해설과 이유를 한 번에 정리할 수 있습니다.</p>
           </div>
         </div>
 
         <div className="note-sheet results-note-sheet" ref={noteRef}>
           {wrongQuestions.length > 0 ? (
-            wrongQuestions.map((question) => {
+            wrongQuestions.map((question, index) => {
               const selection = selectionMap.get(question.selectionId);
               const answerPage = question.matchedAnswerPageNumber ? answerPageMap.get(question.matchedAnswerPageNumber) : undefined;
               const pageQuestions = question.matchedAnswerPageNumber ? pageQuestionMap.get(question.matchedAnswerPageNumber) ?? [question] : [question];
               const analysis = normalizeAnalysis(question.deepAnalysis);
-              const displayQuestionNumber = getDisplayQuestionNumber(question, 0);
+              const displayQuestionNumber = getDisplayQuestionNumber(question, index);
               const explanationTargetNumber = selection?.questionNumberHint ?? question.questionNumber ?? displayQuestionNumber;
-              const explanationRect = resolveLocalExplanationRect(question, pageQuestions, answerPage, explanationTargetNumber);
+              const explanationRects = resolveLocalExplanationRects(question, pageQuestions, answerPage, explanationTargetNumber);
 
               return (
                 <div className="note-card results-note-card" key={`note-${question.selectionId}`} data-note-card="true">
@@ -331,16 +334,18 @@ export function ResultsDashboard({
                   <div className="result-lower-grid">
                     <div className="stack">
                       {selection ? <img alt={`${displayQuestionNumber}번 문제`} src={selection.snapshotDataUrl} /> : null}
-                      <p className="result-note-copy">{sanitizeText(analysis?.oneLineSummary || question.feedback.mistakeReason, "오답 이유를 다시 확인해 보세요.")}</p>
+                      <p className="result-note-copy">
+                        {sanitizeText(analysis?.oneLineSummary || question.feedback.mistakeReason, "오답 이유를 다시 확인해 보세요.")}
+                      </p>
                     </div>
                     <div className="stack">
-                      {answerPage && explanationRect ? (
-                        <CroppedImage imageDataUrl={answerPage.pageImageDataUrl} rect={explanationRect} />
+                      {answerPage && explanationRects.length > 0 ? (
+                        <CroppedImage imageDataUrl={answerPage.pageImageDataUrl} rects={explanationRects} />
                       ) : answerPage ? (
                         <img alt={`${displayQuestionNumber}번 해설`} src={answerPage.pageImageDataUrl} />
                       ) : null}
                       <p className="result-note-copy">
-                        {sanitizeText(analysis?.answerSheetBasis || question.feedback.explanation, "답지 해설 이미지를 함께 보며 다시 정리해 보세요.")}
+                        {sanitizeText(analysis?.answerSheetBasis || question.feedback.explanation, "답지 해설을 다시 읽고 풀이 순서를 정리해 보세요.")}
                       </p>
                     </div>
                   </div>
@@ -348,7 +353,7 @@ export function ResultsDashboard({
               );
             })
           ) : (
-            <div className="empty">오답이 없어서 오답 노트는 비어 있습니다.</div>
+            <div className="empty">오답이 없어 오답 노트가 비어 있습니다.</div>
           )}
         </div>
       </section>
@@ -374,7 +379,7 @@ function ReportRing({
   total,
   correct,
   incorrect,
-  reviewRequired
+  reviewRequired,
 }: {
   total: number;
   correct: number;
@@ -385,7 +390,7 @@ function ReportRing({
     ? [
         { color: "#ff6b6b", value: incorrect / total },
         { color: "#3b82f6", value: correct / total },
-        { color: "#8fd14f", value: reviewRequired / total }
+        { color: "#8fd14f", value: reviewRequired / total },
       ].filter((segment) => segment.value > 0)
     : [];
 
@@ -410,7 +415,7 @@ function ReportRing({
               style={{
                 stroke: segment.color,
                 strokeDasharray: `${segment.value * 100} 100`,
-                strokeDashoffset: `${-currentOffset}`
+                strokeDashoffset: `${-currentOffset}`,
               }}
             />
           );
@@ -428,7 +433,7 @@ function ReportRing({
 function MetricLine({
   label,
   value,
-  tone
+  tone,
 }: {
   label: string;
   value: string;
@@ -449,7 +454,7 @@ function StatusBadge({ type }: { type: "correct" | "wrong" }) {
 function ResultFactRow({
   label,
   value,
-  tone
+  tone,
 }: {
   label: string;
   value: string;
@@ -463,25 +468,39 @@ function ResultFactRow({
   );
 }
 
+function StepCard({ step }: { step: QuestionProcessStep }) {
+  return (
+    <div className={`result-step-card ${step.status}`}>
+      <span className={`result-step-badge ${step.status}`}>{step.order}</span>
+      <div className="result-step-copy">
+        <strong>{sanitizeText(step.summary, "단계를 불러오지 못했습니다.")}</strong>
+        <p>{sanitizeText(step.detail, sanitizeText(step.summary, ""))}</p>
+      </div>
+    </div>
+  );
+}
+
 function CroppedImage({
   imageDataUrl,
-  rect
+  rects,
 }: {
   imageDataUrl: string;
-  rect: QuestionResult["explanationRegion"];
+  rects: NormalizedRect[];
 }) {
-  const safeRect = clampBoundingBox(rect);
+  const safeRects = rects
+    .map((rect) => clampBoundingBox(rect))
+    .filter((rect): rect is NormalizedRect => Boolean(rect));
   const [croppedSrc, setCroppedSrc] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
 
-    if (!imageDataUrl || !safeRect) {
+    if (!imageDataUrl || safeRects.length === 0) {
       setCroppedSrc(null);
       return;
     }
 
-    cropImageDataUrl(imageDataUrl, safeRect)
+    cropImageDataUrlSegments(imageDataUrl, safeRects)
       .then((nextSrc) => {
         if (!cancelled) {
           setCroppedSrc(nextSrc);
@@ -496,25 +515,25 @@ function CroppedImage({
     return () => {
       cancelled = true;
     };
-  }, [imageDataUrl, safeRect]);
+  }, [imageDataUrl, safeRects]);
 
-  if (!safeRect) {
+  if (safeRects.length === 0) {
     return <img alt="해설 원본" src={imageDataUrl} />;
   }
 
   if (croppedSrc) {
     return (
       <div className="crop-frame">
-        <img alt="잘라낸 해설 영역" className="crop-frame-resolved" src={croppedSrc} />
+        <img alt="잘라낸 해설" className="crop-frame-resolved" src={croppedSrc} />
       </div>
     );
   }
 
-  const styles = renderCropStyle(safeRect);
+  const styles = renderCropStyle(safeRects[0]);
 
   return (
     <div className="crop-frame">
-      <img alt="잘라낸 해설 영역" src={imageDataUrl} style={styles.img} />
+      <img alt="잘라낸 해설" src={imageDataUrl} style={styles.img} />
     </div>
   );
 }
@@ -524,23 +543,30 @@ function normalizeAnalysis(analysis?: QuestionDeepAnalysis | null) {
     return null;
   }
 
+  const processSteps =
+    analysis.processSteps && analysis.processSteps.length > 0
+      ? analysis.processSteps.map((step, index) => ({
+          order: step.order || index + 1,
+          status: (step.status === "correct" ? "correct" : "incorrect") as "correct" | "incorrect",
+          summary: sanitizeText(step.summary, "단계를 불러오지 못했습니다."),
+          detail: sanitizeText(step.detail, sanitizeText(step.summary, "")),
+        }))
+      : [];
   const reasonSteps =
     analysis.reasonSteps && analysis.reasonSteps.length > 0
       ? analysis.reasonSteps
-      : [analysis.logicalGap, analysis.conceptGap, analysis.modelSolution].filter(
-          (value): value is string => Boolean(value && value.trim())
-        );
-
+      : processSteps.map((step) => step.summary);
   const oneLineSummary = analysis.oneLineSummary || analysis.studyTip;
 
-  if (reasonSteps.length === 0 && !oneLineSummary) {
+  if (reasonSteps.length === 0 && processSteps.length === 0 && !oneLineSummary) {
     return null;
   }
 
   return {
-    reasonSteps: reasonSteps.length > 0 ? reasonSteps : ["오답 분석 결과를 아직 만들지 못했습니다."],
-    answerSheetBasis: sanitizeText(analysis.answerSheetBasis, "답지 해설 핵심을 아직 정리하지 못했습니다."),
-    oneLineSummary: sanitizeText(oneLineSummary, "개념과 풀이 순서를 다시 점검해 보세요.")
+    processSteps,
+    reasonSteps: reasonSteps.length > 0 ? reasonSteps : ["분석 결과를 아직 만들지 못했습니다."],
+    answerSheetBasis: sanitizeText(analysis.answerSheetBasis, "답지 해설 요약을 아직 정리하지 못했습니다."),
+    oneLineSummary: sanitizeText(oneLineSummary, "개념과 풀이 순서를 다시 확인해 보세요."),
   };
 }
 
@@ -605,11 +631,11 @@ function questionTypeLabel(type: QuestionResult["questionType"]) {
 function authenticityLabel(type: QuestionResult["workEvidence"]["authenticity"]) {
   switch (type) {
     case "solved":
-      return "직접 풀이함";
+      return "직접 풀이";
     case "guessed":
-      return "찍은 가능성";
+      return "찍은 흔적";
     case "blank":
-      return "풀이 흔적 적음";
+      return "풀이 없음";
     case "unclear":
       return "판단 어려움";
     default:
@@ -640,7 +666,7 @@ function sanitizeText(value: string | undefined | null, fallback: string) {
     return fallback;
   }
 
-  const noisyMarkers = ["Unexpected end of JSON", "데모 결과", "GEMINI_API_KEY", "fallback", "환경 변수를 확인"];
+  const noisyMarkers = ["Unexpected end of JSON", "fallback", "GEMINI_API_KEY"];
 
   if (noisyMarkers.some((marker) => normalized.includes(marker))) {
     return fallback;
