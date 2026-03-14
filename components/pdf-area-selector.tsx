@@ -2,6 +2,7 @@
 
 import { startTransition, useEffect, useMemo, useRef, useState } from "react";
 import { Document, Page, pdfjs } from "react-pdf";
+import { PLACEHOLDER_IMAGE_DATA_URL } from "@/lib/image-placeholder";
 import { ensurePdfWorker } from "@/lib/pdf-worker";
 import type { AnswerPagePayload, SelectedQuestionRegionPayload } from "@/lib/types";
 import {
@@ -149,26 +150,31 @@ export function PdfAreaSelector({
       .sort((a, b) => a - b)
       .flatMap((pageNumber) => {
         const canvas = canvasRefs.current[pageNumber];
-
-        if (!canvas) {
-          return [];
-        }
-
         const regionSlices =
           questionRegionsByPage[pageNumber]?.length > 0
             ? questionRegionsByPage[pageNumber]
-            : detectQuestionBandsFromCanvas(canvas).map((bounds, index) => ({
-                questionNumber: null,
-                bounds,
-                textSnippet: textSnippets[pageNumber] ? `${textSnippets[pageNumber]} #${index + 1}` : ""
-              }));
+            : canvas
+              ? detectQuestionBandsFromCanvas(canvas).map((bounds, index) => ({
+                  questionNumber: null,
+                  bounds,
+                  textSnippet: textSnippets[pageNumber] ? `${textSnippets[pageNumber]} #${index + 1}` : ""
+                }))
+              : [
+                  {
+                    questionNumber: null,
+                    bounds: { x: 0.04, y: 0.06, width: 0.92, height: 0.88 },
+                    textSnippet: textSnippets[pageNumber] ?? ""
+                  }
+                ];
 
         return regionSlices.flatMap((region, regionIndex) => {
-          const snapshotDataUrl = cropCanvasToCompressedDataUrl(canvas, region.bounds, {
-            maxWidth: 420,
-            mimeType: "image/jpeg",
-            quality: 0.76
-          });
+          const snapshotDataUrl = canvas
+            ? cropCanvasToCompressedDataUrl(canvas, region.bounds, {
+                maxWidth: 420,
+                mimeType: "image/jpeg",
+                quality: 0.76
+              })
+            : PLACEHOLDER_IMAGE_DATA_URL;
 
           if (!snapshotDataUrl) {
             return [];
@@ -297,16 +303,13 @@ export function PdfAreaSelector({
       .sort((a, b) => a - b)
       .flatMap((pageNumber) => {
         const canvas = canvasRefs.current[pageNumber];
-
-        if (!canvas) {
-          return [];
-        }
-
-        const pageImageDataUrl = canvasToCompressedDataUrl(canvas, {
-          maxWidth: 380,
-          mimeType: "image/jpeg",
-          quality: 0.76
-        });
+        const pageImageDataUrl = canvas
+          ? canvasToCompressedDataUrl(canvas, {
+              maxWidth: 380,
+              mimeType: "image/jpeg",
+              quality: 0.76
+            })
+          : PLACEHOLDER_IMAGE_DATA_URL;
 
         if (!pageImageDataUrl) {
           return [];

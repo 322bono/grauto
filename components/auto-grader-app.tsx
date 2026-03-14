@@ -8,6 +8,7 @@ import { ResultsDashboard } from "@/components/results-dashboard";
 import { observeAuthUser, signInWithGoogle, signOutUser } from "@/lib/firebase/auth";
 import { syncExamRecordToCloud, updateCloudRecordSummary } from "@/lib/firebase/cloud-records";
 import { cropImageDataUrl } from "@/lib/image-crop";
+import { isPlaceholderImageDataUrl } from "@/lib/image-placeholder";
 import { saveRecord } from "@/lib/local-db";
 import { applyManualOverride } from "@/lib/summary";
 import type {
@@ -179,6 +180,18 @@ export function AutoGraderApp() {
   async function gradeExam() {
     if (!questionFile || !effectiveAnswerFile || questionSelections.length === 0 || answerPages.length === 0) {
       window.alert("문제 영역과 답안 페이지를 먼저 선택해 주세요.");
+      return;
+    }
+
+    const pendingQuestionImages = questionSelections.some(
+      (selection) => isPlaceholderImageDataUrl(selection.snapshotDataUrl) || isPlaceholderImageDataUrl(selection.analysisDataUrl)
+    );
+    const pendingAnswerImages = answerPages.some(
+      (page) => isPlaceholderImageDataUrl(page.pageImageDataUrl) || isPlaceholderImageDataUrl(page.analysisImageDataUrl)
+    );
+
+    if (pendingQuestionImages || pendingAnswerImages) {
+      window.alert("페이지 이미지를 아직 준비 중입니다. 1~2초만 기다린 뒤 다시 시도해 주세요.");
       return;
     }
 
