@@ -91,7 +91,7 @@ function extractGeminiText(raw: any) {
     const parts = Array.isArray(candidate?.content?.parts) ? candidate.content.parts : [];
     const text = parts
       .map((part: any) => (typeof part?.text === "string" ? part.text : ""))
-      .join("\n")
+      .join("")
       .trim();
 
     if (text) {
@@ -108,11 +108,18 @@ function stripJsonFence(text: string) {
 
 function parseGeminiJsonText<T>(text: string) {
   const stripped = stripJsonFence(text);
+  const firstJsonBlock = extractFirstJsonBlock(stripped);
+  const repairedStripped = repairCommonJsonIssues(repairUnescapedNewlines(stripped));
+  const repairedFirstBlock = firstJsonBlock
+    ? repairCommonJsonIssues(repairUnescapedNewlines(firstJsonBlock))
+    : "";
   const candidates = [
     stripped,
     extractLikelyJson(stripped),
-    repairCommonJsonIssues(stripped),
-    repairCommonJsonIssues(extractLikelyJson(stripped))
+    firstJsonBlock,
+    repairedStripped,
+    repairCommonJsonIssues(extractLikelyJson(stripped)),
+    repairedFirstBlock
   ].filter((candidate, index, list): candidate is string => Boolean(candidate) && list.indexOf(candidate) === index);
 
   let lastErrorMessage = "";
@@ -147,10 +154,105 @@ function extractLikelyJson(text: string) {
   return text.trim();
 }
 
+function extractFirstJsonBlock(text: string) {
+  const trimmed = text.trim();
+  const startIndex = trimmed.search(/[\[{]/);
+
+  if (startIndex < 0) {
+    return "";
+  }
+
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  const startChar = trimmed[startIndex];
+  const openChar = startChar === "[" ? "[" : "{";
+  const closeChar = startChar === "[" ? "]" : "}";
+
+  for (let index = startIndex; index < trimmed.length; index += 1) {
+    const char = trimmed[index];
+
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+
+    if (char === "\\") {
+      escaped = true;
+      continue;
+    }
+
+    if (char === '"') {
+      inString = !inString;
+      continue;
+    }
+
+    if (inString) {
+      continue;
+    }
+
+    if (char === openChar) {
+      depth += 1;
+      continue;
+    }
+
+    if (char === closeChar) {
+      depth -= 1;
+      if (depth === 0) {
+        return trimmed.slice(startIndex, index + 1).trim();
+      }
+    }
+  }
+
+  return trimmed.slice(startIndex).trim();
+}
+
 function repairCommonJsonIssues(text: string) {
   return text
     .replace(/^\uFEFF/, "")
     .replace(/,\s*([}\]])/g, "$1")
     .replace(/([{,]\s*)([A-Za-z_][A-Za-z0-9_]*)(\s*:)/g, '$1"$2"$3')
     .trim();
+}
+
+function repairUnescapedNewlines(text: string) {
+  let inString = false;
+  let escaped = false;
+  let output = "";
+
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+
+    if (escaped) {
+      output += char;
+      escaped = false;
+      continue;
+    }
+
+    if (char === "\\") {
+      output += char;
+      escaped = true;
+      continue;
+    }
+
+    if (char === '"') {
+      inString = !inString;
+      output += char;
+      continue;
+    }
+
+    if (inString && (char === "\n" || char === "\r")) {
+      output += char === "\n" ? "\\n" : "\\r";
+      continue;
+    }
+
+    if (inString && char === "\t") {
+      output += "\\t";
+      continue;
+    }
+
+    output += char;
+  }
+
+  return output;
 }
