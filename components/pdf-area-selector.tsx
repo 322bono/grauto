@@ -44,6 +44,7 @@ export function PdfAreaSelector({
   const wrapperRef = useRef<HTMLDivElement | null>(null);
   const pageHostRefs = useRef<Record<number, HTMLDivElement | null>>({});
   const canvasRefs = useRef<Record<number, HTMLCanvasElement | null>>({});
+  const selectedPagesRef = useRef<number[]>([]);
 
   const [numPages, setNumPages] = useState(0);
   const [containerWidth, setContainerWidth] = useState(680);
@@ -52,6 +53,10 @@ export function PdfAreaSelector({
   const [textSnippets, setTextSnippets] = useState<Record<number, string>>({});
   const [questionRegionsByPage, setQuestionRegionsByPage] = useState<Record<number, DetectedQuestionSlice[]>>({});
   const [selectedPages, setSelectedPages] = useState<number[]>([]);
+
+  useEffect(() => {
+    selectedPagesRef.current = selectedPages;
+  }, [selectedPages]);
 
   useEffect(() => {
     if (!wrapperRef.current) {
@@ -419,18 +424,123 @@ export function PdfAreaSelector({
     return 132;
   }, [containerWidth]);
 
+  function buildQuickRegions(pageNumbers: number[]) {
+    return [...pageNumbers]
+      .sort((a, b) => a - b)
+      .flatMap((pageNumber) => {
+        const canvas = canvasRefs.current[pageNumber];
+        const regionSlices =
+          questionRegionsByPage[pageNumber]?.length > 0
+            ? questionRegionsByPage[pageNumber]
+            : canvas
+              ? detectQuestionBandsFromCanvas(canvas).map((bounds, index) => ({
+                  questionNumber: null,
+                  bounds,
+                  textSnippet: textSnippets[pageNumber] ? `${textSnippets[pageNumber]} #${index + 1}` : ""
+                }))
+              : [
+                  {
+                    questionNumber: null,
+                    bounds: { x: 0.04, y: 0.06, width: 0.92, height: 0.88 },
+                    textSnippet: textSnippets[pageNumber] ?? ""
+                  }
+                ];
+
+        return regionSlices.flatMap((region, regionIndex) => {
+          const snapshotDataUrl = canvas
+            ? cropCanvasToCompressedDataUrl(canvas, region.bounds, {
+                maxWidth: 420,
+                mimeType: "image/jpeg",
+                quality: 0.76
+              })
+            : PLACEHOLDER_IMAGE_DATA_URL;
+
+          if (!snapshotDataUrl) {
+            return [];
+          }
+
+          return [
+            {
+              id: `question-page-${pageNumber}-${region.questionNumber ?? regionIndex + 1}-${regionIndex}`,
+              pageNumber,
+              displayOrder: 0,
+              bounds: region.bounds,
+              snapshotDataUrl,
+              analysisDataUrl: snapshotDataUrl,
+              extractedTextSnippet: region.textSnippet || textSnippets[pageNumber] || "",
+              questionNumberHint: region.questionNumber
+            } satisfies SelectedQuestionRegionPayload
+          ];
+        });
+      })
+      .map((region, index) => ({
+        ...region,
+        displayOrder: index + 1
+      }));
+  }
+
+  function buildQuickPages(pageNumbers: number[]) {
+    return [...pageNumbers]
+      .sort((a, b) => a - b)
+      .flatMap((pageNumber) => {
+        const canvas = canvasRefs.current[pageNumber];
+        const pageImageDataUrl = canvas
+          ? canvasToCompressedDataUrl(canvas, {
+              maxWidth: 380,
+              mimeType: "image/jpeg",
+              quality: 0.76
+            })
+          : PLACEHOLDER_IMAGE_DATA_URL;
+
+        if (!pageImageDataUrl) {
+          return [];
+        }
+
+        return [
+          {
+            id: `answer-${pageNumber}`,
+            pageNumber,
+            pageImageDataUrl,
+            analysisImageDataUrl: pageImageDataUrl,
+            extractedTextSnippet: textSnippets[pageNumber] ?? ""
+          } satisfies AnswerPagePayload
+        ];
+      });
+  }
+
+  function emitQuickSelection(pageNumbers: number[]) {
+    if (selectionMode === "region" && onRegionsChange) {
+      onRegionsChange(pageNumbers.length > 0 ? buildQuickRegions(pageNumbers) : []);
+      return;
+    }
+
+    if (selectionMode === "page" && onPagesChange) {
+      onPagesChange(pageNumbers.length > 0 ? buildQuickPages(pageNumbers) : []);
+    }
+  }
+
   function togglePage(pageNumber: number) {
-    setSelectedPages((current) =>
-      current.includes(pageNumber) ? current.filter((value) => value !== pageNumber) : [...current, pageNumber].sort((a, b) => a - b)
-    );
+    const current = selectedPagesRef.current;
+    const nextPages = current.includes(pageNumber)
+      ? current.filter((value) => value !== pageNumber)
+      : [...current, pageNumber].sort((a, b) => a - b);
+
+    selectedPagesRef.current = nextPages;
+    setSelectedPages(nextPages);
+    emitQuickSelection(nextPages);
   }
 
   function selectAllPages() {
-    setSelectedPages(Array.from({ length: numPages }, (_, index) => index + 1));
+    const nextPages = Array.from({ length: numPages }, (_, index) => index + 1);
+    selectedPagesRef.current = nextPages;
+    setSelectedPages(nextPages);
+    emitQuickSelection(nextPages);
   }
 
   function clearSelection() {
+    selectedPagesRef.current = [];
     setSelectedPages([]);
+    emitQuickSelection([]);
   }
 
   function registerCanvas(pageNumber: number) {
@@ -439,7 +549,12 @@ export function PdfAreaSelector({
 
     if (canvas instanceof HTMLCanvasElement) {
       canvasRefs.current[pageNumber] = canvas;
-      setSelectedPages((current) => [...current]);
+      const current = selectedPagesRef.current;
+
+      if (current.includes(pageNumber)) {
+        emitQuickSelection(current);
+        setSelectedPages([...current]);
+      }
     }
   }
 
