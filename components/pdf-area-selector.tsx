@@ -1,13 +1,13 @@
 "use client";
 
 import { startTransition, useEffect, useMemo, useRef, useState } from "react";
-import { Document, Page } from "react-pdf";
+import { Document, Page, pdfjs } from "react-pdf";
 import { ensurePdfWorker } from "@/lib/pdf-worker";
 import type { AnswerPagePayload, SelectedQuestionRegionPayload } from "@/lib/types";
 import {
   canvasToCompressedDataUrl,
   clonePdfBytes,
-  cropCanvasToDataUrl,
+  cropCanvasToCompressedDataUrl,
   detectQuestionBandsFromCanvas,
   extractPdfQuestionRegions,
   extractPdfTextSnippets
@@ -139,88 +139,173 @@ export function PdfAreaSelector({
       return;
     }
 
-    const nextRegions = [...selectedPages]
-      .sort((a, b) => a - b)
-      .flatMap((pageNumber) => {
-        const canvas = canvasRefs.current[pageNumber];
+    if (!documentData || selectedPages.length === 0) {
+      onRegionsChange([]);
+      return;
+    }
 
-        if (!canvas) {
-          return [];
-        }
+    let cancelled = false;
 
-        const regionSlices =
-          questionRegionsByPage[pageNumber]?.length > 0
-            ? questionRegionsByPage[pageNumber]
-            : detectQuestionBandsFromCanvas(canvas).map((bounds, index) => ({
-                questionNumber: null,
-                bounds,
-                textSnippet: textSnippets[pageNumber] ? `${textSnippets[pageNumber]} #${index + 1}` : ""
-              }));
+    startTransition(() => {
+      (async () => {
+        const pdfDocument = await pdfjs.getDocument({ data: clonePdfBytes(documentData) }).promise;
 
-        return regionSlices.flatMap((region, regionIndex) => {
-          const snapshotDataUrl = cropCanvasToDataUrl(canvas, region.bounds);
+        try {
+          const nextRegions: SelectedQuestionRegionPayload[] = [];
 
-          if (!snapshotDataUrl) {
-            return [];
+          for (const pageNumber of [...selectedPages].sort((a, b) => a - b)) {
+            const page = await pdfDocument.getPage(pageNumber);
+            const baseViewport = page.getViewport({ scale: 1 });
+            const scale = Math.max(1.8, 1320 / Math.max(1, baseViewport.width));
+            const viewport = page.getViewport({ scale });
+            const renderCanvas = document.createElement("canvas");
+            renderCanvas.width = Math.round(viewport.width);
+            renderCanvas.height = Math.round(viewport.height);
+            const context = renderCanvas.getContext("2d", { alpha: false });
+
+            if (!context) {
+              continue;
+            }
+
+            await page.render({ canvasContext: context, viewport }).promise;
+
+            const regionSlices =
+              questionRegionsByPage[pageNumber]?.length > 0
+                ? questionRegionsByPage[pageNumber]
+                : detectQuestionBandsFromCanvas(renderCanvas).map((bounds, index) => ({
+                    questionNumber: null,
+                    bounds,
+                    textSnippet: textSnippets[pageNumber] ? `${textSnippets[pageNumber]} #${index + 1}` : ""
+                  }));
+
+            regionSlices.forEach((region, regionIndex) => {
+              const snapshotDataUrl = cropCanvasToCompressedDataUrl(renderCanvas, region.bounds, {
+                maxWidth: 900,
+                mimeType: "image/jpeg",
+                quality: 0.9
+              });
+              const analysisDataUrl = cropCanvasToCompressedDataUrl(renderCanvas, region.bounds, {
+                maxWidth: 520,
+                mimeType: "image/jpeg",
+                quality: 0.74
+              });
+
+              if (!snapshotDataUrl) {
+                return;
+              }
+
+              nextRegions.push({
+                id: `question-page-${pageNumber}-${region.questionNumber ?? regionIndex + 1}-${regionIndex}`,
+                pageNumber,
+                displayOrder: 0,
+                bounds: region.bounds,
+                snapshotDataUrl,
+                analysisDataUrl: analysisDataUrl || snapshotDataUrl,
+                extractedTextSnippet: region.textSnippet || textSnippets[pageNumber] || "",
+                questionNumberHint: region.questionNumber
+              });
+            });
           }
 
-          return [
-            {
-              id: `question-page-${pageNumber}-${region.questionNumber ?? regionIndex + 1}-${regionIndex}`,
-              pageNumber,
-              displayOrder: 0,
-              bounds: region.bounds,
-              snapshotDataUrl,
-              extractedTextSnippet: region.textSnippet || textSnippets[pageNumber] || "",
-              questionNumberHint: region.questionNumber
-            }
-          ];
-        });
-      })
-      .map((region, index) => ({
-        ...region,
-        displayOrder: index + 1
-      }));
+          if (!cancelled) {
+            onRegionsChange(
+              nextRegions.map((region, index) => ({
+                ...region,
+                displayOrder: index + 1
+              }))
+            );
+          }
+        } finally {
+          void pdfDocument.destroy();
+        }
+      })().catch(() => {
+        if (!cancelled) {
+          onRegionsChange([]);
+        }
+      });
+    });
 
-    onRegionsChange(nextRegions);
-  }, [onRegionsChange, questionRegionsByPage, selectedPages, selectionMode, textSnippets]);
+    return () => {
+      cancelled = true;
+    };
+  }, [documentData, onRegionsChange, questionRegionsByPage, selectedPages, selectionMode, textSnippets]);
 
   useEffect(() => {
     if (selectionMode !== "page" || !onPagesChange) {
       return;
     }
 
-    const nextPages = [...selectedPages]
-      .sort((a, b) => a - b)
-      .flatMap((pageNumber) => {
-        const canvas = canvasRefs.current[pageNumber];
+    if (!documentData || selectedPages.length === 0) {
+      onPagesChange([]);
+      return;
+    }
 
-        if (!canvas) {
-          return [];
-        }
+    let cancelled = false;
 
-        const pageImageDataUrl = canvasToCompressedDataUrl(canvas, {
-          maxWidth: 176,
-          mimeType: "image/jpeg",
-          quality: 0.72
-        });
+    startTransition(() => {
+      (async () => {
+        const pdfDocument = await pdfjs.getDocument({ data: clonePdfBytes(documentData) }).promise;
 
-        if (!pageImageDataUrl) {
-          return [];
-        }
+        try {
+          const nextPages: AnswerPagePayload[] = [];
 
-        return [
-          {
-            id: `answer-${pageNumber}`,
-            pageNumber,
-            pageImageDataUrl,
-            extractedTextSnippet: textSnippets[pageNumber] ?? ""
+          for (const pageNumber of [...selectedPages].sort((a, b) => a - b)) {
+            const page = await pdfDocument.getPage(pageNumber);
+            const baseViewport = page.getViewport({ scale: 1 });
+            const scale = Math.max(1.8, 1440 / Math.max(1, baseViewport.width));
+            const viewport = page.getViewport({ scale });
+            const renderCanvas = document.createElement("canvas");
+            renderCanvas.width = Math.round(viewport.width);
+            renderCanvas.height = Math.round(viewport.height);
+            const context = renderCanvas.getContext("2d", { alpha: false });
+
+            if (!context) {
+              continue;
+            }
+
+            await page.render({ canvasContext: context, viewport }).promise;
+
+            const pageImageDataUrl = canvasToCompressedDataUrl(renderCanvas, {
+              maxWidth: 1280,
+              mimeType: "image/jpeg",
+              quality: 0.9
+            });
+            const analysisImageDataUrl = canvasToCompressedDataUrl(renderCanvas, {
+              maxWidth: 640,
+              mimeType: "image/jpeg",
+              quality: 0.72
+            });
+
+            if (!pageImageDataUrl) {
+              continue;
+            }
+
+            nextPages.push({
+              id: `answer-${pageNumber}`,
+              pageNumber,
+              pageImageDataUrl,
+              analysisImageDataUrl: analysisImageDataUrl || pageImageDataUrl,
+              extractedTextSnippet: textSnippets[pageNumber] ?? ""
+            });
           }
-        ];
-      });
 
-    onPagesChange(nextPages);
-  }, [onPagesChange, selectedPages, selectionMode, textSnippets]);
+          if (!cancelled) {
+            onPagesChange(nextPages);
+          }
+        } finally {
+          void pdfDocument.destroy();
+        }
+      })().catch(() => {
+        if (!cancelled) {
+          onPagesChange([]);
+        }
+      });
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [documentData, onPagesChange, selectedPages, selectionMode, textSnippets]);
 
   const documentSource = useMemo(() => {
     if (!documentData) {

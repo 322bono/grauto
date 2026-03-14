@@ -117,7 +117,7 @@ function buildGeminiUserParts(payload: AnalyzeRequestPayload): GeminiPart[] {
     {
       text: "아래 이미지는 학생이 실제로 풀이한 문제 영역입니다. 현재 남아 있는 최종 풀이와 최종 답만 기준으로 분석해 주세요."
     },
-    imagePartFromDataUrl(selection.snapshotDataUrl)
+    imagePartFromDataUrl(selection.analysisDataUrl ?? selection.snapshotDataUrl)
   ];
 
   if (answerPage) {
@@ -128,7 +128,7 @@ function buildGeminiUserParts(payload: AnalyzeRequestPayload): GeminiPart[] {
         "아래 이미지는 정답과 해설이 들어 있는 답안 페이지입니다. 보이지 않는 내용은 추측하지 마세요."
       ].join("\n")
     });
-    parts.push(imagePartFromDataUrl(answerPage.pageImageDataUrl));
+    parts.push(imagePartFromDataUrl(answerPage.analysisImageDataUrl ?? answerPage.pageImageDataUrl));
   }
 
   if (explanationCropDataUrl) {

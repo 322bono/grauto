@@ -1,8 +1,9 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { exportWrongAnswerPdf } from "@/lib/export-note";
 import { resolveLocalExplanationRect } from "@/lib/explanation-region";
+import { cropImageDataUrl } from "@/lib/image-crop";
 import { clampBoundingBox, renderCropStyle } from "@/lib/pdf-utils";
 import type { AnswerPagePayload, GradeResponsePayload, QuestionDeepAnalysis, QuestionResult, SelectedQuestionRegionPayload } from "@/lib/types";
 
@@ -249,13 +250,15 @@ export function ResultsDashboard({
                     <button
                       type="button"
                       className="result-explanation-preview"
-                      onClick={() =>
+                      onClick={async () => {
+                        const croppedSrc = await cropImageDataUrl(answerPage.pageImageDataUrl, explanationRect);
+
                         setViewer({
-                          src: answerPage.pageImageDataUrl,
+                          src: croppedSrc ?? answerPage.pageImageDataUrl,
                           alt: `${question.questionNumber ?? index + 1}번 해설`,
                           title: `${question.questionNumber ?? index + 1}번 해설`
-                        })
-                      }
+                        });
+                      }}
                     >
                       <CroppedImage imageDataUrl={answerPage.pageImageDataUrl} rect={explanationRect} />
                       <span className="result-zoom-hint">눌러서 확대</span>
@@ -452,9 +455,43 @@ function CroppedImage({
   rect: QuestionResult["explanationRegion"];
 }) {
   const safeRect = clampBoundingBox(rect);
+  const [croppedSrc, setCroppedSrc] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    if (!imageDataUrl || !safeRect) {
+      setCroppedSrc(null);
+      return;
+    }
+
+    cropImageDataUrl(imageDataUrl, safeRect)
+      .then((nextSrc) => {
+        if (!cancelled) {
+          setCroppedSrc(nextSrc);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setCroppedSrc(null);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [imageDataUrl, safeRect]);
 
   if (!safeRect) {
     return <img alt="해설 원본" src={imageDataUrl} />;
+  }
+
+  if (croppedSrc) {
+    return (
+      <div className="crop-frame">
+        <img alt="잘라낸 해설 영역" className="crop-frame-resolved" src={croppedSrc} />
+      </div>
+    );
   }
 
   const styles = renderCropStyle(safeRect);

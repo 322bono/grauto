@@ -27,6 +27,7 @@ export interface SelectedQuestionRegionPayload {
   displayOrder: number;
   bounds: NormalizedRect;
   snapshotDataUrl: string;
+  analysisDataUrl?: string;
   extractedTextSnippet?: string;
   questionNumberHint?: number | null;
 }
@@ -35,6 +36,7 @@ export interface AnswerPagePayload {
   id: string;
   pageNumber: number;
   pageImageDataUrl: string;
+  analysisImageDataUrl?: string;
   extractedTextSnippet?: string;
 }
 

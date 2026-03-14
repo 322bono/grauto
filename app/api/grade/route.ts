@@ -203,13 +203,13 @@ function buildUserParts(payload: GradeRequestPayload): GeminiPart[] {
       ].join("\n")
     });
 
-    parts.push(imagePartFromDataUrl(selection.snapshotDataUrl));
+    parts.push(imagePartFromDataUrl(selection.analysisDataUrl ?? selection.snapshotDataUrl));
 
     candidatePages.forEach((page, candidateIndex) => {
       parts.push({
         text: `answer_candidate page=${page.pageNumber}, text_hint=${page.extractedTextSnippet || "없음"}, primary_candidate=${candidateIndex === 0}`
       });
-      parts.push(imagePartFromDataUrl(page.pageImageDataUrl));
+      parts.push(imagePartFromDataUrl(page.analysisImageDataUrl ?? page.pageImageDataUrl));
     });
   });
 

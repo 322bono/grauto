@@ -1382,6 +1382,14 @@ img {
   object-fit: cover;
 }
 
+.crop-frame .crop-frame-resolved {
+  position: static;
+  display: block;
+  width: 100%;
+  height: auto;
+  object-fit: contain;
+}
+
 .detail-grid {
   display: grid;
   gap: 10px;

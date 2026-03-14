@@ -138,6 +138,35 @@ export function cropCanvasToDataUrl(sourceCanvas: HTMLCanvasElement, rect: Norma
   return canvas.toDataURL("image/jpeg", 0.82);
 }
 
+export function cropCanvasToCompressedDataUrl(
+  sourceCanvas: HTMLCanvasElement,
+  rect: NormalizedRect,
+  options?: {
+    maxWidth?: number;
+    mimeType?: "image/jpeg" | "image/png";
+    quality?: number;
+  }
+) {
+  const actual = denormalizeRect(rect, sourceCanvas.width, sourceCanvas.height);
+  const cropX = Math.max(0, Math.round(actual.left));
+  const cropY = Math.max(0, Math.round(actual.top));
+  const cropWidth = Math.max(24, Math.round(actual.width));
+  const cropHeight = Math.max(24, Math.round(actual.height));
+
+  const canvas = document.createElement("canvas");
+  canvas.width = cropWidth;
+  canvas.height = cropHeight;
+  const context = canvas.getContext("2d");
+
+  if (!context) {
+    return "";
+  }
+
+  context.drawImage(sourceCanvas, cropX, cropY, cropWidth, cropHeight, 0, 0, cropWidth, cropHeight);
+
+  return canvasToCompressedDataUrl(canvas, options);
+}
+
 export function canvasToCompressedDataUrl(
   sourceCanvas: HTMLCanvasElement,
   options?: {

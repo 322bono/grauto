@@ -1,7 +1,7 @@
 import type { NormalizedRect, QuestionResult } from "@/lib/types";
 
 interface PageColumn {
-  id: "left" | "right" | "full";
+  id: string;
   x: number;
   width: number;
 }
@@ -16,9 +16,14 @@ export function resolveLocalExplanationRect(
   const currentTop = resolveExplanationTop(question);
   const nextQuestion = findNextQuestionInColumn(question, pageQuestions, currentColumn, layout);
   const nextAnchor = nextQuestion ? resolveQuestionTop(nextQuestion) - 0.02 : 0.965;
+  const suggestedBottom = normalizedExplanation ? normalizedExplanation.y + normalizedExplanation.height : 0.965;
 
   let top = clamp(currentTop, 0.04, 0.92);
-  let bottom = Math.min(nextAnchor, normalizedExplanation ? normalizedExplanation.y + normalizedExplanation.height : 0.965);
+  let bottom = Math.min(nextAnchor, suggestedBottom);
+
+  if (!nextQuestion && normalizedExplanation && normalizedExplanation.height > 0.56) {
+    bottom = Math.min(bottom, top + 0.36);
+  }
 
   if (!Number.isFinite(bottom) || bottom <= top + 0.08) {
     bottom = nextQuestion ? Math.max(top + 0.1, nextAnchor) : Math.min(0.965, top + Math.max(normalizedExplanation?.height ?? 0.22, 0.2));
@@ -46,37 +51,29 @@ function inferPageLayout(pageQuestions: QuestionResult[]) {
 
   if (anchors.length < 2) {
     return {
-      isTwoColumn: false,
       columns: [{ id: "full", x: 0.05, width: 0.9 } satisfies PageColumn]
     };
   }
 
-  const leftCluster = anchors.filter((anchor) => anchor.center < 0.53);
-  const rightCluster = anchors.filter((anchor) => anchor.center >= 0.53);
-  const leftRightGap =
-    leftCluster.length > 0 && rightCluster.length > 0
-      ? Math.min(...rightCluster.map((item) => item.left)) - Math.max(...leftCluster.map((item) => item.right))
-      : -1;
-  const isTwoColumn = leftCluster.length > 0 && rightCluster.length > 0 && leftRightGap > 0.04;
+  const groups = buildColumnGroups(anchors);
 
-  if (!isTwoColumn) {
+  if (groups.length <= 1) {
     return {
-      isTwoColumn: false,
       columns: [{ id: "full", x: 0.05, width: 0.9 } satisfies PageColumn]
     };
   }
-
-  const leftStart = clamp(Math.min(...leftCluster.map((item) => item.left), 0.05), 0.03, 0.22);
-  const leftEnd = clamp(Math.max(...leftCluster.map((item) => item.right), 0.47), 0.38, 0.58);
-  const rightStart = clamp(Math.min(...rightCluster.map((item) => item.left), 0.52), 0.42, 0.72);
-  const rightEnd = clamp(Math.max(...rightCluster.map((item) => item.right), 0.95), 0.78, 0.98);
 
   return {
-    isTwoColumn: true,
-    columns: [
-      { id: "left", x: leftStart, width: clamp(leftEnd - leftStart, 0.26, 0.5) },
-      { id: "right", x: rightStart, width: clamp(rightEnd - rightStart, 0.22, 0.5) }
-    ] satisfies PageColumn[]
+    columns: groups.map((group, index) => {
+      const left = clamp(Math.min(...group.map((item) => item.left)) - 0.01, 0.03, 0.92);
+      const right = clamp(Math.max(...group.map((item) => item.right)) + 0.02, left + 0.14, 0.98);
+
+      return {
+        id: `col-${index + 1}`,
+        x: left,
+        width: clamp(right - left, 0.16, 0.92)
+      } satisfies PageColumn;
+    })
   };
 }
 
@@ -84,14 +81,16 @@ function resolveQuestionColumn(
   question: QuestionResult,
   layout: ReturnType<typeof inferPageLayout>
 ) {
-  if (!layout.isTwoColumn) {
+  if (layout.columns.length <= 1) {
     return layout.columns[0];
   }
 
   const box = resolveBaseBox(question);
   const center = box ? box.x + box.width / 2 : 0.5;
 
-  return center < 0.53 ? layout.columns[0] : layout.columns[1];
+  return [...layout.columns].sort(
+    (left, right) => Math.abs(center - (left.x + left.width / 2)) - Math.abs(center - (right.x + right.width / 2))
+  )[0];
 }
 
 function findNextQuestionInColumn(
@@ -119,7 +118,7 @@ function resolveHorizontalBounds(
 ) {
   const explanation = normalizeRect(question.explanationRegion);
 
-  if (!layout.isTwoColumn) {
+  if (layout.columns.length <= 1) {
     if (!explanation) {
       return {
         x: column.x,
@@ -154,6 +153,38 @@ function resolveHorizontalBounds(
     x: left,
     width: clamp(right - left, 0.18, column.width)
   };
+}
+
+function buildColumnGroups(anchors: Array<{ left: number; right: number; center: number }>) {
+  const sorted = [...anchors].sort((left, right) => left.center - right.center);
+  const groups: Array<Array<{ left: number; right: number; center: number }>> = [];
+
+  sorted.forEach((anchor) => {
+    const previous = groups[groups.length - 1];
+
+    if (!previous) {
+      groups.push([anchor]);
+      return;
+    }
+
+    const previousCenter = average(previous.map((item) => item.center));
+    const previousRight = Math.max(...previous.map((item) => item.right));
+    const centerGap = anchor.center - previousCenter;
+    const leftGap = anchor.left - previousRight;
+
+    if (centerGap <= 0.14 || leftGap <= 0.035) {
+      previous.push(anchor);
+      return;
+    }
+
+    groups.push([anchor]);
+  });
+
+  return groups.slice(0, 3);
+}
+
+function average(values: number[]) {
+  return values.reduce((sum, value) => sum + value, 0) / Math.max(1, values.length);
 }
 
 function resolveExplanationTop(question: QuestionResult) {

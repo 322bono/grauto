@@ -187,8 +187,14 @@ export function AutoGraderApp() {
     const payload: GradeRequestPayload = {
       uploadMode,
       metadata,
-      questionSelections,
-      answerPages
+      questionSelections: questionSelections.map(({ analysisDataUrl, ...selection }) => ({
+        ...selection,
+        snapshotDataUrl: analysisDataUrl ?? selection.snapshotDataUrl
+      })),
+      answerPages: answerPages.map(({ analysisImageDataUrl, ...page }) => ({
+        ...page,
+        pageImageDataUrl: analysisImageDataUrl ?? page.pageImageDataUrl
+      }))
     };
     const requestBody = JSON.stringify(payload);
     const payloadBytes = new TextEncoder().encode(requestBody).length;
