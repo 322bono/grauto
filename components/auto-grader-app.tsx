@@ -205,7 +205,7 @@ export function AutoGraderApp() {
         ...selection,
         snapshotDataUrl: analysisDataUrl ?? selection.snapshotDataUrl
       })),
-      answerPages: answerPages.map(({ analysisImageDataUrl, answerAnchors, ...page }) => ({
+      answerPages: answerPages.map(({ analysisImageDataUrl, ...page }) => ({
         ...page,
         pageImageDataUrl: analysisImageDataUrl ?? page.pageImageDataUrl
       }))

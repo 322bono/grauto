@@ -60,21 +60,55 @@ export function ResultsDashboard({
       }),
     [result.questions, selectionMap]
   );
+  const resolvedPageNumberMap = useMemo(() => {
+    const nextMap = new Map<string, number | null>();
+
+    sortedQuestions.forEach((question, index) => {
+      const selection = selectionMap.get(question.selectionId);
+      const displayQuestionNumber =
+        selection?.displayOrder ?? question.questionNumber ?? selection?.questionNumberHint ?? index + 1;
+      const targetQuestionNumber = selection?.questionNumberHint ?? question.questionNumber ?? displayQuestionNumber;
+      const matchedPage = question.matchedAnswerPageNumber
+        ? answerPageMap.get(question.matchedAnswerPageNumber)
+        : undefined;
+      const matchedPageHasTarget =
+        matchedPage && targetQuestionNumber
+          ? (matchedPage.answerAnchors ?? []).some((anchor) => anchor.questionNumber === targetQuestionNumber)
+          : false;
+      const anchoredPage =
+        targetQuestionNumber
+          ? answerPages.find((page) =>
+              (page.answerAnchors ?? []).some((anchor) => anchor.questionNumber === targetQuestionNumber)
+            )
+          : undefined;
+
+      nextMap.set(
+        question.selectionId,
+        matchedPageHasTarget
+          ? matchedPage?.pageNumber ?? null
+          : anchoredPage?.pageNumber ?? question.matchedAnswerPageNumber ?? null
+      );
+    });
+
+    return nextMap;
+  }, [answerPageMap, answerPages, selectionMap, sortedQuestions]);
   const pageQuestionMap = useMemo(() => {
     const nextMap = new Map<number, QuestionResult[]>();
 
     sortedQuestions.forEach((question) => {
-      if (question.matchedAnswerPageNumber === null) {
+      const resolvedPageNumber = resolvedPageNumberMap.get(question.selectionId);
+
+      if (resolvedPageNumber === null || resolvedPageNumber === undefined) {
         return;
       }
 
-      const current = nextMap.get(question.matchedAnswerPageNumber) ?? [];
+      const current = nextMap.get(resolvedPageNumber) ?? [];
       current.push(question);
-      nextMap.set(question.matchedAnswerPageNumber, current);
+      nextMap.set(resolvedPageNumber, current);
     });
 
     return nextMap;
-  }, [sortedQuestions]);
+  }, [resolvedPageNumberMap, sortedQuestions]);
   const wrongQuestions = sortedQuestions.filter((question) => !question.isCorrect);
 
   async function handleAnalysisClick(selectionId: string) {
@@ -94,6 +128,11 @@ export function ResultsDashboard({
   function getDisplayQuestionNumber(question: QuestionResult, fallbackIndex: number) {
     const selection = selectionMap.get(question.selectionId);
     return selection?.displayOrder ?? question.questionNumber ?? selection?.questionNumberHint ?? fallbackIndex + 1;
+  }
+
+  function getResolvedAnswerPage(question: QuestionResult) {
+    const resolvedPageNumber = resolvedPageNumberMap.get(question.selectionId);
+    return resolvedPageNumber ? answerPageMap.get(resolvedPageNumber) : undefined;
   }
 
   return (
@@ -173,8 +212,9 @@ export function ResultsDashboard({
       <div className="results-question-list stack">
         {sortedQuestions.map((question, index) => {
           const selection = selectionMap.get(question.selectionId);
-          const answerPage = question.matchedAnswerPageNumber ? answerPageMap.get(question.matchedAnswerPageNumber) : undefined;
-          const pageQuestions = question.matchedAnswerPageNumber ? pageQuestionMap.get(question.matchedAnswerPageNumber) ?? [question] : [question];
+          const answerPage = getResolvedAnswerPage(question);
+          const resolvedPageNumber = resolvedPageNumberMap.get(question.selectionId);
+          const pageQuestions = resolvedPageNumber ? pageQuestionMap.get(resolvedPageNumber) ?? [question] : [question];
           const displayQuestionNumber = getDisplayQuestionNumber(question, index);
           const explanationTargetNumber = selection?.questionNumberHint ?? question.questionNumber ?? displayQuestionNumber;
           const explanationRects = resolveLocalExplanationRects(question, pageQuestions, answerPage, explanationTargetNumber);
@@ -321,8 +361,9 @@ export function ResultsDashboard({
           {wrongQuestions.length > 0 ? (
             wrongQuestions.map((question, index) => {
               const selection = selectionMap.get(question.selectionId);
-              const answerPage = question.matchedAnswerPageNumber ? answerPageMap.get(question.matchedAnswerPageNumber) : undefined;
-              const pageQuestions = question.matchedAnswerPageNumber ? pageQuestionMap.get(question.matchedAnswerPageNumber) ?? [question] : [question];
+              const answerPage = getResolvedAnswerPage(question);
+              const resolvedPageNumber = resolvedPageNumberMap.get(question.selectionId);
+              const pageQuestions = resolvedPageNumber ? pageQuestionMap.get(resolvedPageNumber) ?? [question] : [question];
               const analysis = normalizeAnalysis(question.deepAnalysis);
               const displayQuestionNumber = getDisplayQuestionNumber(question, index);
               const explanationTargetNumber = selection?.questionNumberHint ?? question.questionNumber ?? displayQuestionNumber;

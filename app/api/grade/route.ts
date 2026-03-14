@@ -1,15 +1,16 @@
 import { NextResponse } from "next/server";
 import { imagePartFromDataUrl, type GeminiPart, generateGeminiJson } from "@/lib/gemini";
-import { rankAnswerPageCandidates } from "@/lib/page-matching";
+import { findBestAnswerPageByAnchors, rankAnswerPageCandidates } from "@/lib/page-matching";
 import { buildSummary } from "@/lib/summary";
 import { normalizeReadableText } from "@/lib/text-quality";
 import type {
+  AnswerPagePayload,
   BoundingBox,
   GradeRequestPayload,
   GradeResponsePayload,
   QuestionResult,
   QuestionType,
-  WorkAuthenticity
+  WorkAuthenticity,
 } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -43,7 +44,7 @@ const GRADE_RESPONSE_SCHEMA = {
           "answer_region",
           "explanation_region",
           "work_evidence",
-          "feedback"
+          "feedback",
         ],
         properties: {
           selection_id: { type: "string" },
@@ -67,8 +68,8 @@ const GRADE_RESPONSE_SCHEMA = {
               x: { type: "number" },
               y: { type: "number" },
               width: { type: "number" },
-              height: { type: "number" }
-            }
+              height: { type: "number" },
+            },
           },
           explanation_region: {
             type: "object",
@@ -78,8 +79,8 @@ const GRADE_RESPONSE_SCHEMA = {
               x: { type: "number" },
               y: { type: "number" },
               width: { type: "number" },
-              height: { type: "number" }
-            }
+              height: { type: "number" },
+            },
           },
           work_evidence: {
             type: "object",
@@ -91,9 +92,9 @@ const GRADE_RESPONSE_SCHEMA = {
               extracted_work: { type: "string" },
               detected_marks: {
                 type: "array",
-                items: { type: "string" }
-              }
-            }
+                items: { type: "string" },
+              },
+            },
           },
           feedback: {
             type: "object",
@@ -105,14 +106,14 @@ const GRADE_RESPONSE_SCHEMA = {
               recommended_review: { type: "string" },
               concept_tags: {
                 type: "array",
-                items: { type: "string" }
-              }
-            }
-          }
-        }
-      }
-    }
-  }
+                items: { type: "string" },
+              },
+            },
+          },
+        },
+      },
+    },
+  },
 } as const;
 
 const SYSTEM_PROMPT = `
@@ -120,41 +121,36 @@ You grade scanned exam pages.
 Return JSON only.
 
 Goals:
-1. Match each question image to the most likely answer/explanation page.
-2. For multiple-choice questions, detect the student's selected option number from visible marks.
-3. Judge correctness only by whether the student's final answer is in the answer list.
-4. Classify visible work as solved / guessed / blank / unclear.
-5. Ignore erased marks or ambiguous overwritten traces.
-6. Return tight normalized boxes for the answer region and explanation region.
-7. Keep feedback short.
+1. Match each question image to the best answer page candidate.
+2. For multiple-choice questions, detect the selected option number from the visible mark.
+3. Judge correctness only by comparing the student's final answer to the correct answer.
+4. Ignore erased traces or uncertain overwritten marks.
+5. Keep answer_region and explanation_region tight.
 
 Rules:
-- For multiple-choice, if the student placed a visible V mark, check mark, slash, circle, or emphasis near a choice, student_answer must be the option number only.
-- Example: a mark near ④ means student_answer="4". A mark near ② means student_answer="2".
-- If a multiple-choice mark is clearly visible, do not return blank or "미인식".
-- For multiple-choice, answer_region should tightly cover the chosen option and its mark.
-- Do not invent symbols, choices, or text you cannot see.
-- Keep question order aligned to selection_id order.
-- Broken OCR text does not matter if the selected option mark is visually clear.
+- If a visible check, V mark, slash, circle, or emphasis is attached to one choice, student_answer must be the option number only.
+- Example: a mark near ④ means student_answer="4".
+- If the choice mark is visually clear, do not return blank.
+- matched_answer_page_number must prefer a candidate page whose anchor numbers include the current question number.
 - mistake_reason: 1 sentence max.
 - explanation: 2 sentences max.
 - recommended_review: 1 sentence max.
-- concept_tags: max 3.
-- Set review_required=true when confidence is low.
+- concept_tags: max 3 items.
+- Set review_required=true when confidence is low or the answer page match is uncertain.
 `;
 
 export async function POST(request: Request) {
   const payload = (await request.json()) as GradeRequestPayload;
 
   if (!payload.questionSelections?.length || !payload.answerPages?.length) {
-    return new NextResponse("문제 페이지와 답안 페이지를 먼저 선택해 주세요.", { status: 400 });
+    return new NextResponse("문제 문항과 답안 페이지를 먼저 선택해 주세요.", { status: 400 });
   }
 
   const apiKey = process.env.GEMINI_API_KEY;
   const model = process.env.GEMINI_MODEL ?? "gemini-2.5-flash";
 
   if (!apiKey) {
-    return NextResponse.json(buildFallbackResponse(payload, "GEMINI_API_KEY가 없어 데모 결과를 반환합니다."));
+    return NextResponse.json(buildFallbackResponse(payload, "GEMINI_API_KEY is missing."));
   }
 
   try {
@@ -165,12 +161,12 @@ export async function POST(request: Request) {
       parts: buildUserParts(payload),
       responseJsonSchema: GRADE_RESPONSE_SCHEMA,
       maxOutputTokens: estimateOutputTokens(payload.questionSelections.length),
-      temperature: 0
+      temperature: 0,
     });
 
     return NextResponse.json(normalizeResponse(payload, parsed));
   } catch (error) {
-    const message = error instanceof Error ? error.message : "자동 채점 중 오류가 발생했습니다.";
+    const message = error instanceof Error ? error.message : "Automatic grading failed.";
     return NextResponse.json(buildFallbackResponse(payload, message));
   }
 }
@@ -179,15 +175,15 @@ function buildUserParts(payload: GradeRequestPayload): GeminiPart[] {
   const parts: GeminiPart[] = [
     {
       text: [
-        `시험명: ${payload.metadata.examName || "미입력"}`,
-        `과목: ${payload.metadata.subject}`,
-        `난이도: ${payload.metadata.difficulty}`,
-        `풀이 시간: ${payload.metadata.durationMinutes ?? "미입력"}분`,
-        `시험 날짜: ${payload.metadata.takenAt}`,
+        `exam_name=${payload.metadata.examName || "untitled"}`,
+        `subject=${payload.metadata.subject || "unknown"}`,
+        `difficulty=${payload.metadata.difficulty || "unknown"}`,
+        `duration_minutes=${payload.metadata.durationMinutes ?? "unknown"}`,
+        `taken_at=${payload.metadata.takenAt || "unknown"}`,
         "",
-        "문제별로 가장 가능성 높은 답안 후보 페이지를 비교해서 기본 채점만 진행해 주세요."
-      ].join("\n")
-    }
+        "Use the best answer page candidate for each selected question.",
+      ].join("\n"),
+    },
   ];
 
   payload.questionSelections.forEach((selection, index) => {
@@ -195,7 +191,10 @@ function buildUserParts(payload: GradeRequestPayload): GeminiPart[] {
     const candidatePages = rankedCandidates.slice(0, MAX_CANDIDATE_PAGES).map((item) => item.page);
     const candidateHints = rankedCandidates
       .slice(0, MAX_CANDIDATE_PAGES)
-      .map((item) => `- page=${item.page.pageNumber}, score=${item.score.toFixed(2)}, reasons=${item.reasons.join(" / ")}`)
+      .map((item) => {
+        const anchorNumbers = getAnchorQuestionNumbers(item.page).join(",");
+        return `- page=${item.page.pageNumber}, anchors=${anchorNumbers || "none"}, score=${item.score.toFixed(2)}, reasons=${item.reasons.join(" / ")}`;
+      })
       .join("\n");
 
     parts.push({
@@ -203,19 +202,21 @@ function buildUserParts(payload: GradeRequestPayload): GeminiPart[] {
         `question_index=${index + 1}`,
         `selection_id=${selection.id}`,
         `question_page=${selection.pageNumber}`,
-        `question_number_hint=${selection.questionNumberHint ?? "unknown"}`,
-        `text_hint=${selection.extractedTextSnippet || "없음"}`,
-        "multiple_choice_hint=객관식이면 문제 이미지에서 체크/V/동그라미가 붙은 선택지 번호만 student_answer로 반환하세요.",
+        `question_number_hint=${selection.questionNumberHint ?? selection.displayOrder ?? "unknown"}`,
+        `text_hint=${selection.extractedTextSnippet || "none"}`,
+        "multiple_choice_hint=If there is a visible mark on one option, return only that option number as student_answer.",
         "answer_page_candidates:",
-        candidateHints || "- 없음"
-      ].join("\n")
+        candidateHints || "- none",
+      ].join("\n"),
     });
 
     parts.push(imagePartFromDataUrl(selection.analysisDataUrl ?? selection.snapshotDataUrl));
 
     candidatePages.forEach((page, candidateIndex) => {
+      const anchorNumbers = getAnchorQuestionNumbers(page).join(",");
+
       parts.push({
-        text: `answer_candidate page=${page.pageNumber}, text_hint=${page.extractedTextSnippet || "없음"}, primary_candidate=${candidateIndex === 0}`
+        text: `answer_candidate page=${page.pageNumber}, anchors=${anchorNumbers || "none"}, text_hint=${page.extractedTextSnippet || "none"}, primary_candidate=${candidateIndex === 0}`,
       });
       parts.push(imagePartFromDataUrl(page.analysisImageDataUrl ?? page.pageImageDataUrl));
     });
@@ -237,7 +238,7 @@ function normalizeResponse(payload: GradeRequestPayload, parsed: { questions?: u
     generatedAt: new Date().toISOString(),
     mode: "vision",
     summary: buildSummary(questions),
-    questions
+    questions,
   };
 }
 
@@ -247,17 +248,19 @@ function normalizeQuestion(
   raw: any,
   index: number
 ): QuestionResult {
-  const answerPageNumber = payload.answerPages.some((page) => page.pageNumber === raw?.matched_answer_page_number)
-    ? raw.matched_answer_page_number
-    : (payload.answerPages[0]?.pageNumber ?? null);
-  const rawQuestionType = normalizeQuestionType(raw?.question_type);
-  const isCorrect = Boolean(raw?.is_correct);
-  const maxScore = Math.max(1, toNumber(raw?.max_score, 1));
-  const score = Math.max(0, Math.min(maxScore, toNumber(raw?.score, isCorrect ? maxScore : 0)));
   const resolvedQuestionNumber =
     selection.displayOrder ??
     selection.questionNumberHint ??
     (Number.isFinite(raw?.question_number) ? Number(raw.question_number) : index + 1);
+  const answerPageMatch = resolveMatchedAnswerPage(
+    payload.answerPages,
+    Number.isFinite(raw?.matched_answer_page_number) ? Number(raw.matched_answer_page_number) : null,
+    resolvedQuestionNumber
+  );
+  const rawQuestionType = normalizeQuestionType(raw?.question_type);
+  const isCorrect = Boolean(raw?.is_correct);
+  const maxScore = Math.max(1, toNumber(raw?.max_score, 1));
+  const score = Math.max(0, Math.min(maxScore, toNumber(raw?.score, isCorrect ? maxScore : 0)));
   const normalizedDetectedHeaderText = normalizeReadableText(raw?.detected_header_text, "");
   const normalizedTextHint = normalizeReadableText(selection.extractedTextSnippet, "");
   const detectedMarks = Array.isArray(raw?.work_evidence?.detected_marks)
@@ -271,15 +274,15 @@ function normalizeQuestion(
     textHint: normalizedTextHint,
     studentAnswer: normalizedChoiceStudentAnswer,
     correctAnswer: normalizedChoiceCorrectAnswer,
-    detectedMarks
+    detectedMarks,
   });
 
   return {
     selectionId: selection.id,
     questionNumber: resolvedQuestionNumber,
     detectedHeaderText: toStringValue(
-      normalizeReadableText(raw?.detected_header_text, ""),
-      normalizeReadableText(selection.extractedTextSnippet, "") || `문제 ${resolvedQuestionNumber}`
+      normalizedDetectedHeaderText,
+      normalizedTextHint || `문제 ${resolvedQuestionNumber}`
     ),
     questionType,
     studentAnswer: normalizeStudentAnswer(raw?.student_answer, questionType),
@@ -289,68 +292,79 @@ function normalizeQuestion(
     maxScore,
     confidence: clamp(toNumber(raw?.confidence, 0.48), 0, 1),
     reviewRequired: Boolean(raw?.review_required),
-    matchedAnswerPageNumber: answerPageNumber,
-    matchedAnswerReason: toStringValue(
-      raw?.matched_answer_reason,
-      "페이지 번호, 상단 텍스트, 문항 단서를 바탕으로 가장 가까운 답안 페이지로 매칭했습니다."
-    ),
+    matchedAnswerPageNumber: answerPageMatch.pageNumber,
+    matchedAnswerReason:
+      toStringValue(
+        raw?.matched_answer_reason,
+        "문항 번호, 텍스트 힌트, 답지 페이지 후보를 함께 비교해 가장 가까운 답지 페이지를 찾았습니다."
+      ) + answerPageMatch.reasonSuffix,
     answerRegion: normalizeBox(raw?.answer_region),
     explanationRegion: normalizeBox(raw?.explanation_region),
     workEvidence: {
       authenticity: normalizeAuthenticity(raw?.work_evidence?.authenticity),
       rationale: toStringValue(raw?.work_evidence?.rationale, "풀이 흔적이 충분하지 않아 보수적으로 판단했습니다."),
       extractedWork: toStringValue(raw?.work_evidence?.extracted_work, ""),
-      detectedMarks: Array.isArray(raw?.work_evidence?.detected_marks)
-        ? raw.work_evidence.detected_marks.filter((item: unknown) => typeof item === "string")
-        : []
+      detectedMarks,
     },
     feedback: {
-      mistakeReason: toStringValue(raw?.feedback?.mistake_reason, "답안을 다시 한 번 확인해 주세요."),
-      explanation: toStringValue(raw?.feedback?.explanation, "답지 해설 이미지를 함께 보고 다시 확인해 보세요."),
-      recommendedReview: toStringValue(raw?.feedback?.recommended_review, "같은 유형 문제를 1~2문항 더 풀어보는 것을 추천합니다."),
+      mistakeReason: toStringValue(raw?.feedback?.mistake_reason, "학생 답과 정답을 다시 확인해 주세요."),
+      explanation: toStringValue(raw?.feedback?.explanation, "답지 해설 이미지를 다시 확인해 보세요."),
+      recommendedReview: toStringValue(
+        raw?.feedback?.recommended_review,
+        "같은 유형 문제를 1~2문항 더 풀어 보며 개념을 확인해 보세요."
+      ),
       conceptTags: Array.isArray(raw?.feedback?.concept_tags)
         ? raw.feedback.concept_tags.filter((item: unknown) => typeof item === "string").slice(0, 3)
-        : []
-    }
+        : [],
+    },
   };
 }
 
 function buildFallbackResponse(payload: GradeRequestPayload, reason: string): GradeResponsePayload {
-  const questions: QuestionResult[] = payload.questionSelections.map((selection, index) => ({
-    selectionId: selection.id,
-    questionNumber: selection.displayOrder ?? selection.questionNumberHint ?? index + 1,
-    detectedHeaderText: selection.extractedTextSnippet || `문제 ${selection.displayOrder ?? selection.questionNumberHint ?? index + 1}`,
-    questionType: "short-answer",
-    studentAnswer: "",
-    correctAnswer: "",
-    isCorrect: false,
-    score: 0,
-    maxScore: 1,
-    confidence: 0.18,
-    reviewRequired: true,
-    matchedAnswerPageNumber: payload.answerPages[index]?.pageNumber ?? payload.answerPages[0]?.pageNumber ?? null,
-    matchedAnswerReason: "실제 채점 호출에 실패해 첫 번째 답안 후보 페이지를 임시로 연결했습니다.",
-    answerRegion: { x: 0.08, y: 0.08, width: 0.34, height: 0.12 },
-    explanationRegion: { x: 0.06, y: 0.16, width: 0.88, height: 0.72 },
-    workEvidence: {
-      authenticity: "unclear",
-      rationale: "현재는 자동 풀이 흔적 판정이 완료되지 않았습니다.",
-      extractedWork: "",
-      detectedMarks: []
-    },
-    feedback: {
-      mistakeReason: "실제 정오 판정이 완료되지 않았습니다.",
-      explanation: `환경 설정 또는 요청 크기 문제로 데모 결과를 반환했습니다. 현재 메시지: ${reason}`,
-      recommendedReview: "설정을 확인한 뒤 다시 채점해 주세요.",
-      conceptTags: ["설정 확인 필요"]
-    }
-  }));
+  const questions: QuestionResult[] = payload.questionSelections.map((selection, index) => {
+    const questionNumber = selection.displayOrder ?? selection.questionNumberHint ?? index + 1;
+    const answerPageMatch = resolveMatchedAnswerPage(
+      payload.answerPages,
+      payload.answerPages[index]?.pageNumber ?? null,
+      questionNumber
+    );
+
+    return {
+      selectionId: selection.id,
+      questionNumber,
+      detectedHeaderText: selection.extractedTextSnippet || `문제 ${questionNumber}`,
+      questionType: "short-answer",
+      studentAnswer: "",
+      correctAnswer: "",
+      isCorrect: false,
+      score: 0,
+      maxScore: 1,
+      confidence: 0.18,
+      reviewRequired: true,
+      matchedAnswerPageNumber: answerPageMatch.pageNumber,
+      matchedAnswerReason: `실제 채점 추출에 실패해 임시 답지 페이지를 연결했습니다.${answerPageMatch.reasonSuffix}`,
+      answerRegion: { x: 0.08, y: 0.08, width: 0.34, height: 0.12 },
+      explanationRegion: { x: 0.06, y: 0.16, width: 0.88, height: 0.72 },
+      workEvidence: {
+        authenticity: "unclear",
+        rationale: "현재는 자동 풀이 흔적 판정을 완료하지 못했습니다.",
+        extractedWork: "",
+        detectedMarks: [],
+      },
+      feedback: {
+        mistakeReason: "실제 정오 판정을 완료하지 못했습니다.",
+        explanation: `환경 설정 또는 모델 응답 문제로 데모 결과를 반환했습니다. 현재 메시지: ${reason}`,
+        recommendedReview: "환경 변수를 확인한 뒤 다시 채점해 주세요.",
+        conceptTags: ["설정 확인 필요"],
+      },
+    };
+  });
 
   return {
     generatedAt: new Date().toISOString(),
     mode: "fallback",
     summary: buildSummary(questions),
-    questions
+    questions,
   };
 }
 
@@ -375,10 +389,10 @@ function inferQuestionType(input: {
   }
 
   const textPool = [input.detectedHeaderText, input.textHint].filter(Boolean).join(" ");
-  const hasChoiceGlyphs = /[\u2460-\u2473\u2776-\u277F]/u.test(textPool);
+  const hasChoiceGlyphs = /[\u2460-\u2473\u2776-\u277f]/u.test(textPool);
   const hasChoicePattern = countChoiceMarkers(textPool) >= 3;
   const numericChoiceAnswer = isChoiceAnswer(input.studentAnswer) || isChoiceAnswer(input.correctAnswer);
-  const hasChoiceMark = input.detectedMarks.some((mark) => /check|circle|slash|mark|선택|체크|브이|v/i.test(mark));
+  const hasChoiceMark = input.detectedMarks.some((mark) => /check|circle|slash|mark|choice|v/i.test(mark));
 
   if (hasChoiceGlyphs || hasChoicePattern) {
     return "multiple-choice";
@@ -452,7 +466,7 @@ function normalizeChoiceAnswer(value: string) {
     "②": "2",
     "③": "3",
     "④": "4",
-    "⑤": "5"
+    "⑤": "5",
   };
 
   if (circledMap[compact]) {
@@ -460,12 +474,7 @@ function normalizeChoiceAnswer(value: string) {
   }
 
   const digitMatch = compact.match(/[1-5]/);
-
-  if (digitMatch) {
-    return digitMatch[0];
-  }
-
-  return compact;
+  return digitMatch?.[0] ?? compact;
 }
 
 function isChoiceAnswer(value: string) {
@@ -483,4 +492,54 @@ function countChoiceMarkers(value: string) {
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
+}
+
+function getAnchorQuestionNumbers(page: AnswerPagePayload) {
+  return (page.answerAnchors ?? [])
+    .map((anchor) => anchor.questionNumber)
+    .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+}
+
+function pageContainsQuestionNumber(page: AnswerPagePayload, questionNumber: number | null | undefined) {
+  if (!questionNumber) {
+    return false;
+  }
+
+  return getAnchorQuestionNumbers(page).includes(questionNumber);
+}
+
+function resolveMatchedAnswerPage(
+  answerPages: AnswerPagePayload[],
+  rawPageNumber: number | null,
+  questionNumber: number | null
+) {
+  const rawPage = rawPageNumber ? answerPages.find((page) => page.pageNumber === rawPageNumber) ?? null : null;
+  const anchorPage = findBestAnswerPageByAnchors(answerPages, questionNumber);
+
+  if (rawPage && pageContainsQuestionNumber(rawPage, questionNumber)) {
+    return { pageNumber: rawPage.pageNumber, reasonSuffix: "" };
+  }
+
+  if (anchorPage && (!rawPage || anchorPage.pageNumber !== rawPage.pageNumber)) {
+    return {
+      pageNumber: anchorPage.pageNumber,
+      reasonSuffix: ` (local anchor match used for question ${questionNumber ?? "unknown"})`,
+    };
+  }
+
+  if (rawPage) {
+    return { pageNumber: rawPage.pageNumber, reasonSuffix: "" };
+  }
+
+  if (anchorPage) {
+    return {
+      pageNumber: anchorPage.pageNumber,
+      reasonSuffix: ` (local anchor fallback used for question ${questionNumber ?? "unknown"})`,
+    };
+  }
+
+  return {
+    pageNumber: answerPages[0]?.pageNumber ?? null,
+    reasonSuffix: answerPages.length > 0 ? " (fallback to the first answer page)" : "",
+  };
 }

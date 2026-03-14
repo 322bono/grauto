@@ -7,20 +7,20 @@ interface RankedAnswerPage {
 }
 
 const STOPWORDS = new Set([
-  "문제",
-  "해설",
-  "정답",
-  "정리",
-  "답지",
-  "단원",
-  "테스트",
-  "모의고사",
+  "problem",
+  "answer",
+  "explanation",
+  "page",
   "the",
-  "and"
+  "and",
 ]);
 
 function normalizeText(text: string) {
-  return text.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, " ").replace(/\s+/g, " ").trim();
+  return text
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function extractTokens(text: string) {
@@ -31,15 +31,11 @@ function extractTokens(text: string) {
 
 function extractPageReferences(text: string) {
   const refs = new Set<number>();
-  const patterns = [
-    /p\.?\s*(\d{1,4})/gi,
-    /(\d{1,4})\s*쪽/gi,
-    /page\s*(\d{1,4})/gi
-  ];
+  const patterns = [/p\.?\s*(\d{1,4})/gi, /page\s*(\d{1,4})/gi];
 
   patterns.forEach((pattern) => {
-    let match: RegExpExecArray | null;
-    match = pattern.exec(text);
+    let match = pattern.exec(text);
+
     while (match) {
       refs.add(Number(match[1]));
       match = pattern.exec(text);
@@ -62,10 +58,42 @@ function intersectCount<T>(left: Iterable<T>, right: Iterable<T>) {
   return count;
 }
 
-export function rankAnswerPageCandidates(selection: SelectedQuestionRegionPayload, answerPages: AnswerPagePayload[]): RankedAnswerPage[] {
+function listAnchorNumbers(page: AnswerPagePayload) {
+  return (page.answerAnchors ?? [])
+    .map((anchor) => anchor.questionNumber)
+    .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+}
+
+function pageContainsQuestionNumber(page: AnswerPagePayload, questionNumber: number | null | undefined) {
+  if (!questionNumber) {
+    return false;
+  }
+
+  return listAnchorNumbers(page).includes(questionNumber);
+}
+
+export function findBestAnswerPageByAnchors(
+  answerPages: AnswerPagePayload[],
+  questionNumber: number | null | undefined
+) {
+  if (!questionNumber) {
+    return null;
+  }
+
+  return (
+    answerPages.find((page) => pageContainsQuestionNumber(page, questionNumber)) ??
+    null
+  );
+}
+
+export function rankAnswerPageCandidates(
+  selection: SelectedQuestionRegionPayload,
+  answerPages: AnswerPagePayload[]
+): RankedAnswerPage[] {
   const questionText = selection.extractedTextSnippet ?? "";
   const questionTokens = extractTokens(questionText);
   const questionRefs = extractPageReferences(questionText);
+  const hintedQuestionNumber = selection.questionNumberHint ?? selection.displayOrder ?? null;
 
   return answerPages
     .map((page) => {
@@ -74,37 +102,48 @@ export function rankAnswerPageCandidates(selection: SelectedQuestionRegionPayloa
       const answerRefs = extractPageReferences(answerText);
       const tokenOverlap = intersectCount(questionTokens, answerTokens);
       const refOverlap = intersectCount(questionRefs, answerRefs);
+      const anchorNumbers = listAnchorNumbers(page);
       const reasons: string[] = [];
       let score = 0;
 
+      if (hintedQuestionNumber && anchorNumbers.includes(hintedQuestionNumber)) {
+        score += 14;
+        reasons.push(`anchor question ${hintedQuestionNumber} matched on page`);
+      }
+
       if (refOverlap > 0) {
-        score += 9;
-        reasons.push("질문 페이지 단서와 답안 페이지의 쪽수 참조가 일치");
+        score += 8;
+        reasons.push(`page references overlapped ${refOverlap} time(s)`);
       }
 
       if (tokenOverlap > 0) {
         score += Math.min(6, tokenOverlap * 1.5);
-        reasons.push(`상단 제목/텍스트 토큰 ${tokenOverlap}개 겹침`);
+        reasons.push(`text tokens overlapped ${tokenOverlap} time(s)`);
+      }
+
+      if (anchorNumbers.length === 0) {
+        score -= 1;
+        reasons.push("no local answer anchors found on this page");
       }
 
       if (!answerText) {
         score -= 0.6;
-        reasons.push("임베디드 텍스트가 없어 Vision OCR 의존");
+        reasons.push("page text hint was empty");
       }
 
       if (page.pageNumber === selection.pageNumber) {
         score += 0.25;
-        reasons.push("통합 PDF일 가능성을 고려해 동일 페이지 번호에 소량 가점");
+        reasons.push("same page number kept as a weak tie-breaker");
       }
 
       if (reasons.length === 0) {
-        reasons.push("명시 단서가 적어 보수적으로 후보 유지");
+        reasons.push("kept as a low-confidence fallback candidate");
       }
 
       return {
         page,
         score,
-        reasons
+        reasons,
       };
     })
     .sort((a, b) => b.score - a.score || a.page.pageNumber - b.page.pageNumber);
