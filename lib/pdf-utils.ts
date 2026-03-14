@@ -385,38 +385,53 @@ function toPositionedFragments(item: unknown, viewportWidth: number, viewportHei
 }
 
 function buildQuestionRegionsFromFragments(fragments: PositionedTextFragment[]) {
-  const anchors = detectQuestionAnchors(fragments).filter((anchor) => anchor.left <= 0.24);
+  const anchors = detectQuestionAnchors(fragments);
   const dedupedAnchors = dedupeQuestionAnchors(anchors);
 
   if (dedupedAnchors.length === 0) {
     return [] as DetectedQuestionRegion[];
   }
 
-  return dedupedAnchors.slice(0, 20).map((anchor, index) => {
-    const nextAnchor = dedupedAnchors[index + 1];
-    const startY = Math.max(0.04, anchor.top - 0.018);
-    const endY = nextAnchor ? Math.min(0.94, Math.max(startY + 0.18, nextAnchor.top - 0.018)) : 0.94;
-    const bounds = clampBoundingBox({
-      x: 0.04,
-      y: startY,
-      width: 0.92,
-      height: endY - startY
+  const columns = inferColumnBands(dedupedAnchors);
+  const orderedColumns = [...columns].sort((left, right) => left.left - right.left);
+  const regions = orderedColumns.flatMap((column) => {
+    const columnAnchors = dedupedAnchors
+      .filter((anchor) => resolveAnchorColumn(anchor, orderedColumns).id === column.id)
+      .sort((left, right) => left.top - right.top)
+      .slice(0, 20);
+
+    return columnAnchors.map((anchor, index) => {
+      const nextAnchor = columnAnchors[index + 1];
+      const startY = Math.max(0.04, anchor.top - 0.018);
+      const endY = nextAnchor ? Math.min(0.94, Math.max(startY + 0.16, nextAnchor.top - 0.018)) : 0.94;
+      const horizontalPadding = orderedColumns.length > 1 ? 0.008 : 0.01;
+      const x = Math.max(0.02, column.left - horizontalPadding);
+      const right = Math.min(0.98, column.right + horizontalPadding);
+      const bounds = clampBoundingBox({
+        x,
+        y: startY,
+        width: right - x,
+        height: endY - startY
+      });
+
+      const textSnippet = fragments
+        .filter((fragment) => fragment.left <= right + 0.01 && fragment.right >= x - 0.01)
+        .filter((fragment) => fragment.top >= startY - 0.01 && fragment.bottom <= endY + 0.015)
+        .map((fragment) => fragment.text)
+        .join(" ")
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 180);
+
+      return {
+        questionNumber: anchor.questionNumber,
+        bounds: bounds ?? { x, y: startY, width: Math.max(0.16, right - x), height: Math.max(0.08, endY - startY) },
+        textSnippet: normalizeReadableText(textSnippet)
+      };
     });
-
-    const textSnippet = fragments
-      .filter((fragment) => fragment.top >= startY - 0.01 && fragment.bottom <= endY + 0.015)
-      .map((fragment) => fragment.text)
-      .join(" ")
-      .replace(/\s+/g, " ")
-      .trim()
-      .slice(0, 180);
-
-    return {
-      questionNumber: anchor.questionNumber,
-      bounds: bounds ?? { x: 0.04, y: startY, width: 0.92, height: Math.max(0.08, endY - startY) },
-      textSnippet: normalizeReadableText(textSnippet)
-    };
   });
+
+  return regions.slice(0, 24);
 }
 
 function buildAnswerRegionsFromFragments(fragments: PositionedTextFragment[]) {
@@ -489,7 +504,7 @@ function dedupeQuestionAnchors(anchors: QuestionAnchorCandidate[]) {
   return anchors.reduce<Array<{ questionNumber: number; left: number; top: number }>>((current, anchor) => {
     const previous = current[current.length - 1];
 
-    if (previous && Math.abs(previous.top - anchor.top) < 0.025) {
+    if (previous && Math.abs(previous.top - anchor.top) < 0.025 && Math.abs(previous.left - anchor.left) < 0.08) {
       if (anchor.left < previous.left) {
         previous.left = anchor.left;
         previous.questionNumber = anchor.questionNumber;
