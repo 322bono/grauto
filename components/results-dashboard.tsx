@@ -41,10 +41,15 @@ export function ResultsDashboard({
   const answerPageMap = useMemo(() => new Map(answerPages.map((page) => [page.pageNumber, page])), [answerPages]);
   const sortedQuestions = useMemo(
     () =>
-      [...result.questions].sort(
-        (left, right) => (left.questionNumber ?? Number.MAX_SAFE_INTEGER) - (right.questionNumber ?? Number.MAX_SAFE_INTEGER)
-      ),
-    [result.questions]
+      [...result.questions].sort((left, right) => {
+        const leftSelection = selectionMap.get(left.selectionId);
+        const rightSelection = selectionMap.get(right.selectionId);
+        const leftOrder = leftSelection?.displayOrder ?? left.questionNumber ?? Number.MAX_SAFE_INTEGER;
+        const rightOrder = rightSelection?.displayOrder ?? right.questionNumber ?? Number.MAX_SAFE_INTEGER;
+
+        return leftOrder - rightOrder;
+      }),
+    [result.questions, selectionMap]
   );
   const pageQuestionMap = useMemo(() => {
     const nextMap = new Map<number, QuestionResult[]>();
@@ -75,6 +80,12 @@ export function ResultsDashboard({
     } finally {
       setLoadingAnalysisId((current) => (current === selectionId ? null : current));
     }
+  }
+
+  function getDisplayQuestionNumber(question: QuestionResult, fallbackIndex: number) {
+    const selection = selectionMap.get(question.selectionId);
+
+    return selection?.questionNumberHint ?? selection?.displayOrder ?? question.questionNumber ?? fallbackIndex + 1;
   }
 
   return (
@@ -143,7 +154,7 @@ export function ResultsDashboard({
                 document.getElementById(`question-${question.selectionId}`)?.scrollIntoView({ behavior: "smooth", block: "start" })
               }
             >
-              {question.questionNumber ?? index + 1}번
+              {getDisplayQuestionNumber(question, index)}번
             </button>
           ))}
         </div>
@@ -157,12 +168,13 @@ export function ResultsDashboard({
           const explanationRect = resolveLocalExplanationRect(question, pageQuestions);
           const analysis = normalizeAnalysis(question.deepAnalysis);
           const isAnalyzing = loadingAnalysisId === question.selectionId;
+          const displayQuestionNumber = getDisplayQuestionNumber(question, index);
 
           return (
             <article className="result-question-card" id={`question-${question.selectionId}`} key={question.selectionId}>
               <div className="result-card-head">
                 <div>
-                  <h3 className="result-card-title">{question.questionNumber ?? index + 1}번 문제</h3>
+                  <h3 className="result-card-title">{displayQuestionNumber}번 문제</h3>
                   <p className="result-card-subtitle">
                     {sanitizeText(question.detectedHeaderText, `페이지 ${selection?.pageNumber ?? "-"} 기준으로 매칭했습니다.`)}
                   </p>
@@ -180,14 +192,14 @@ export function ResultsDashboard({
                   selection
                     ? setViewer({
                         src: selection.snapshotDataUrl,
-                        alt: `${question.questionNumber ?? index + 1}번 문제`,
-                        title: `${question.questionNumber ?? index + 1}번 문제`
+                        alt: `${displayQuestionNumber}번 문제`,
+                        title: `${displayQuestionNumber}번 문제`
                       })
                     : null
                 }
               >
                 {selection ? (
-                  <img alt={`${question.questionNumber ?? index + 1}번 문제`} src={selection.snapshotDataUrl} />
+                  <img alt={`${displayQuestionNumber}번 문제`} src={selection.snapshotDataUrl} />
                 ) : (
                   <div className="empty">문제 이미지를 찾지 못했습니다.</div>
                 )}
@@ -255,8 +267,8 @@ export function ResultsDashboard({
 
                         setViewer({
                           src: croppedSrc ?? answerPage.pageImageDataUrl,
-                          alt: `${question.questionNumber ?? index + 1}번 해설`,
-                          title: `${question.questionNumber ?? index + 1}번 해설`
+                          alt: `${displayQuestionNumber}번 해설`,
+                          title: `${displayQuestionNumber}번 해설`
                         });
                       }}
                     >
@@ -308,20 +320,21 @@ export function ResultsDashboard({
               const pageQuestions = question.matchedAnswerPageNumber ? pageQuestionMap.get(question.matchedAnswerPageNumber) ?? [question] : [question];
               const explanationRect = resolveLocalExplanationRect(question, pageQuestions);
               const analysis = normalizeAnalysis(question.deepAnalysis);
+              const displayQuestionNumber = getDisplayQuestionNumber(question, 0);
 
               return (
                 <div className="note-card results-note-card" key={`note-${question.selectionId}`} data-note-card="true">
-                  <h3>{question.questionNumber ?? "?"}번</h3>
+                  <h3>{displayQuestionNumber}번</h3>
                   <div className="result-lower-grid">
                     <div className="stack">
-                      {selection ? <img alt={`${question.questionNumber ?? "?"}번 문제`} src={selection.snapshotDataUrl} /> : null}
+                      {selection ? <img alt={`${displayQuestionNumber}번 문제`} src={selection.snapshotDataUrl} /> : null}
                       <p className="result-note-copy">{sanitizeText(analysis?.oneLineSummary || question.feedback.mistakeReason, "오답 이유를 다시 확인해 보세요.")}</p>
                     </div>
                     <div className="stack">
                       {answerPage && explanationRect ? (
                         <CroppedImage imageDataUrl={answerPage.pageImageDataUrl} rect={explanationRect} />
                       ) : answerPage ? (
-                        <img alt={`${question.questionNumber ?? "?"}번 해설`} src={answerPage.pageImageDataUrl} />
+                        <img alt={`${displayQuestionNumber}번 해설`} src={answerPage.pageImageDataUrl} />
                       ) : null}
                       <p className="result-note-copy">
                         {sanitizeText(analysis?.answerSheetBasis || question.feedback.explanation, "답지 해설 이미지를 함께 보며 다시 정리해 보세요.")}

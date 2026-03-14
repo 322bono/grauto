@@ -246,13 +246,17 @@ function normalizeQuestion(
   const isCorrect = Boolean(raw?.is_correct);
   const maxScore = Math.max(1, toNumber(raw?.max_score, 1));
   const score = Math.max(0, Math.min(maxScore, toNumber(raw?.score, isCorrect ? maxScore : 0)));
+  const resolvedQuestionNumber =
+    selection.questionNumberHint ??
+    selection.displayOrder ??
+    (Number.isFinite(raw?.question_number) ? Number(raw.question_number) : index + 1);
 
   return {
     selectionId: selection.id,
-    questionNumber: Number.isFinite(raw?.question_number) ? raw.question_number : (selection.questionNumberHint ?? index + 1),
+    questionNumber: resolvedQuestionNumber,
     detectedHeaderText: toStringValue(
       raw?.detected_header_text,
-      selection.extractedTextSnippet || `문제 ${selection.questionNumberHint ?? index + 1}`
+      selection.extractedTextSnippet || `문제 ${resolvedQuestionNumber}`
     ),
     questionType,
     studentAnswer: toStringValue(raw?.student_answer, ""),
