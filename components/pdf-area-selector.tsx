@@ -145,6 +145,58 @@ export function PdfAreaSelector({
     }
 
     let cancelled = false;
+    const quickRegions = [...selectedPages]
+      .sort((a, b) => a - b)
+      .flatMap((pageNumber) => {
+        const canvas = canvasRefs.current[pageNumber];
+
+        if (!canvas) {
+          return [];
+        }
+
+        const regionSlices =
+          questionRegionsByPage[pageNumber]?.length > 0
+            ? questionRegionsByPage[pageNumber]
+            : detectQuestionBandsFromCanvas(canvas).map((bounds, index) => ({
+                questionNumber: null,
+                bounds,
+                textSnippet: textSnippets[pageNumber] ? `${textSnippets[pageNumber]} #${index + 1}` : ""
+              }));
+
+        return regionSlices.flatMap((region, regionIndex) => {
+          const snapshotDataUrl = cropCanvasToCompressedDataUrl(canvas, region.bounds, {
+            maxWidth: 420,
+            mimeType: "image/jpeg",
+            quality: 0.76
+          });
+
+          if (!snapshotDataUrl) {
+            return [];
+          }
+
+          return [
+            {
+              id: `question-page-${pageNumber}-${region.questionNumber ?? regionIndex + 1}-${regionIndex}`,
+              pageNumber,
+              displayOrder: 0,
+              bounds: region.bounds,
+              snapshotDataUrl,
+              analysisDataUrl: snapshotDataUrl,
+              extractedTextSnippet: region.textSnippet || textSnippets[pageNumber] || "",
+              questionNumberHint: region.questionNumber
+            }
+          ];
+        });
+      });
+
+    if (quickRegions.length > 0) {
+      onRegionsChange(
+        quickRegions.map((region, index) => ({
+          ...region,
+          displayOrder: index + 1
+        }))
+      );
+    }
 
     startTransition(() => {
       (async () => {
@@ -241,6 +293,39 @@ export function PdfAreaSelector({
     }
 
     let cancelled = false;
+    const quickPages = [...selectedPages]
+      .sort((a, b) => a - b)
+      .flatMap((pageNumber) => {
+        const canvas = canvasRefs.current[pageNumber];
+
+        if (!canvas) {
+          return [];
+        }
+
+        const pageImageDataUrl = canvasToCompressedDataUrl(canvas, {
+          maxWidth: 380,
+          mimeType: "image/jpeg",
+          quality: 0.76
+        });
+
+        if (!pageImageDataUrl) {
+          return [];
+        }
+
+        return [
+          {
+            id: `answer-${pageNumber}`,
+            pageNumber,
+            pageImageDataUrl,
+            analysisImageDataUrl: pageImageDataUrl,
+            extractedTextSnippet: textSnippets[pageNumber] ?? ""
+          }
+        ];
+      });
+
+    if (quickPages.length > 0) {
+      onPagesChange(quickPages);
+    }
 
     startTransition(() => {
       (async () => {
