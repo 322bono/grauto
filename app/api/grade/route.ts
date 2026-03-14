@@ -353,7 +353,7 @@ function buildFallbackResponse(payload: GradeRequestPayload, reason: string): Gr
       },
       feedback: {
         mistakeReason: "실제 정오 판정을 완료하지 못했습니다.",
-        explanation: `환경 설정 또는 모델 응답 문제로 데모 결과를 반환했습니다. 현재 메시지: ${reason}`,
+        explanation: "일시적인 모델 응답 문제로 이번 채점은 자동 해설을 완성하지 못했습니다. 다시 채점하면 정상 인식될 수 있습니다.",
         recommendedReview: "환경 변수를 확인한 뒤 다시 채점해 주세요.",
         conceptTags: ["설정 확인 필요"],
       },

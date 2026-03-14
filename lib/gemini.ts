@@ -66,7 +66,7 @@ export async function generateGeminiJson<T>({
     throw new Error("Gemini 응답에서 JSON 텍스트를 찾지 못했습니다.");
   }
 
-  return JSON.parse(stripJsonFence(outputText)) as T;
+  return parseGeminiJsonText<T>(outputText);
 }
 
 export function imagePartFromDataUrl(dataUrl: string): GeminiPart {
@@ -104,4 +104,50 @@ function extractGeminiText(raw: any) {
 
 function stripJsonFence(text: string) {
   return text.replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```$/i, "").trim();
+}
+
+function parseGeminiJsonText<T>(text: string) {
+  const stripped = stripJsonFence(text);
+  const candidates = [
+    stripped,
+    extractLikelyJson(stripped),
+    repairCommonJsonIssues(stripped),
+    repairCommonJsonIssues(extractLikelyJson(stripped))
+  ].filter((candidate, index, list): candidate is string => Boolean(candidate) && list.indexOf(candidate) === index);
+
+  for (const candidate of candidates) {
+    try {
+      return JSON.parse(candidate) as T;
+    } catch {
+      // Try the next repaired candidate.
+    }
+  }
+
+  throw new Error("Gemini JSON parse failed after local repair attempts.");
+}
+
+function extractLikelyJson(text: string) {
+  const objectStart = text.indexOf("{");
+  const objectEnd = text.lastIndexOf("}");
+
+  if (objectStart >= 0 && objectEnd > objectStart) {
+    return text.slice(objectStart, objectEnd + 1).trim();
+  }
+
+  const arrayStart = text.indexOf("[");
+  const arrayEnd = text.lastIndexOf("]");
+
+  if (arrayStart >= 0 && arrayEnd > arrayStart) {
+    return text.slice(arrayStart, arrayEnd + 1).trim();
+  }
+
+  return text.trim();
+}
+
+function repairCommonJsonIssues(text: string) {
+  return text
+    .replace(/^\uFEFF/, "")
+    .replace(/,\s*([}\]])/g, "$1")
+    .replace(/([{,]\s*)([A-Za-z_][A-Za-z0-9_]*)(\s*:)/g, '$1"$2"$3')
+    .trim();
 }
