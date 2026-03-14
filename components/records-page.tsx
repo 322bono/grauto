@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { ResultsDashboard } from "@/components/results-dashboard";
+import { throttleAiRequest } from "@/lib/ai-throttle";
 import { resolveLocalExplanationRects } from "@/lib/explanation-region";
 import { observeAuthUser } from "@/lib/firebase/auth";
 import {
@@ -230,6 +231,7 @@ export function RecordsPage() {
           ? await cropImageDataUrlSegments(answerPage.pageImageDataUrl, localExplanationRects)
           : null;
 
+      await throttleAiRequest(15_000);
       const response = await fetch("/api/analyze", {
         method: "POST",
         headers: {

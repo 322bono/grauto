@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState } from "react";
 import { ExamMetadataForm } from "@/components/exam-metadata-form";
 import { PdfAreaSelector } from "@/components/pdf-area-selector";
 import { ResultsDashboard } from "@/components/results-dashboard";
+import { throttleAiRequest } from "@/lib/ai-throttle";
 import { resolveLocalExplanationRects } from "@/lib/explanation-region";
 import { observeAuthUser, signInWithGoogle, signOutUser } from "@/lib/firebase/auth";
 import { syncExamRecordToCloud, updateCloudRecordSummary } from "@/lib/firebase/cloud-records";
@@ -70,7 +71,8 @@ const GRADE_PROGRESS_STEPS: GradingProgressStep[] = [
   }
 ];
 
-const APP_VERSION = "Beta v0.3.1";
+const APP_VERSION = "Beta v0.3.2";
+const AI_REQUEST_MIN_GAP_MS = 15_000;
 
 function getTodayLocalDate() {
   const now = new Date();
@@ -281,6 +283,7 @@ export function AutoGraderApp() {
 
     try {
       setGradingProgressIndex(1);
+      await throttleAiRequest(AI_REQUEST_MIN_GAP_MS);
       const response = await fetch("/api/grade", {
         method: "POST",
         headers: {
@@ -393,6 +396,7 @@ export function AutoGraderApp() {
           ? await cropImageDataUrlSegments(answerPage.pageImageDataUrl, localExplanationRects)
           : null;
 
+      await throttleAiRequest(AI_REQUEST_MIN_GAP_MS);
       const response = await fetch("/api/analyze", {
         method: "POST",
         headers: {

@@ -5,6 +5,7 @@ import { Document, Page, pdfjs } from "react-pdf";
 import { PLACEHOLDER_IMAGE_DATA_URL } from "@/lib/image-placeholder";
 import { buildPdfDocumentInit, PDF_DOCUMENT_OPTIONS } from "@/lib/pdf-config";
 import { ensurePdfWorker } from "@/lib/pdf-worker";
+import { throttleAiRequest } from "@/lib/ai-throttle";
 import type {
   AnswerPagePayload,
   PageNumberAnchor,
@@ -42,6 +43,7 @@ const SEGMENT_MAX_BATCH_PAGES = 20;
 const SEGMENT_MAX_BATCH_BYTES = 2_200_000;
 const SEGMENT_REQUEST_DEBOUNCE_MS = 520;
 const SEGMENT_RETRY_DEFAULT_MS = 30_000;
+const SEGMENT_MIN_REQUEST_GAP_MS = 15_000;
 
 export function PdfAreaSelector({
   title,
@@ -310,6 +312,7 @@ export function PdfAreaSelector({
     );
 
     try {
+      await throttleAiRequest(SEGMENT_MIN_REQUEST_GAP_MS);
       const response = await fetch("/api/segment", {
         method: "POST",
         headers: {
