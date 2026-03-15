@@ -40,9 +40,15 @@ interface PdfAreaSelectorProps {
 }
 
 const SEGMENT_MAX_BATCH_PAGES = 20;
-const SEGMENT_MAX_BATCH_BYTES = 2_200_000;
 const SEGMENT_REQUEST_DEBOUNCE_MS = 520;
 const SEGMENT_RETRY_DEFAULT_MS = 30_000;
+const SEGMENT_TEXT_SNIPPET_LIMIT = 80;
+const SEGMENT_COMPRESSION_TIERS = [
+  { maxWidth: 960, quality: 0.78 },
+  { maxWidth: 760, quality: 0.7 },
+  { maxWidth: 620, quality: 0.62 },
+] as const;
+const SEGMENT_BATCH_BYTES_BY_TIER = [2_200_000, 1_600_000, 1_200_000] as const;
 const SEGMENT_MIN_REQUEST_GAP_MS = 15_000;
 
 export function PdfAreaSelector({
@@ -69,6 +75,7 @@ export function PdfAreaSelector({
   const [selectedPages, setSelectedPages] = useState<number[]>([]);
   const [segmentStatusByPage, setSegmentStatusByPage] = useState<Record<string, "idle" | "loading" | "ready" | "error">>({});
   const [segmentRetryAt, setSegmentRetryAt] = useState<number | null>(null);
+  const [segmentCompressionTier, setSegmentCompressionTier] = useState(0);
 
   useEffect(() => {
     selectedPagesRef.current = selectedPages;
@@ -97,6 +104,7 @@ export function PdfAreaSelector({
     setAnswerAnchorsByPage({});
     setSegmentStatusByPage({});
     setSegmentRetryAt(null);
+    setSegmentCompressionTier(0);
     canvasRefs.current = {};
     pageHostRefs.current = {};
 
@@ -189,6 +197,18 @@ export function PdfAreaSelector({
     return /429|RESOURCE_EXHAUSTED|quota/i.test(message);
   }
 
+  function isContextLengthErrorMessage(message: string) {
+    return /context|input.*too.*long|payload too large|request payload size/i.test(message);
+  }
+
+  function getCompressionConfig(tier: number) {
+    return SEGMENT_COMPRESSION_TIERS[Math.min(tier, SEGMENT_COMPRESSION_TIERS.length - 1)];
+  }
+
+  function getBatchByteLimit(tier: number) {
+    return SEGMENT_BATCH_BYTES_BY_TIER[Math.min(tier, SEGMENT_BATCH_BYTES_BY_TIER.length - 1)];
+  }
+
   function estimateSegmentPageBytes(page: SegmentRequestPayload["pages"][number]) {
     return page.pageImageDataUrl.length + (page.textSnippet?.length ?? 0) + 64;
   }
@@ -197,12 +217,12 @@ export function PdfAreaSelector({
     const sortedPages = [...pages].sort((left, right) => left.pageNumber - right.pageNumber);
     const picked: SegmentRequestPayload["pages"] = [];
     let totalBytes = 0;
+    const byteLimit = getBatchByteLimit(segmentCompressionTier);
 
     for (const page of sortedPages) {
       const nextBytes = estimateSegmentPageBytes(page);
       const tooManyPages = picked.length >= SEGMENT_MAX_BATCH_PAGES;
-      const tooLargePayload =
-        picked.length > 0 && totalBytes + nextBytes > SEGMENT_MAX_BATCH_BYTES;
+      const tooLargePayload = picked.length > 0 && totalBytes + nextBytes > byteLimit;
 
       if (tooManyPages || tooLargePayload) {
         break;
@@ -273,6 +293,7 @@ export function PdfAreaSelector({
   }
 
   async function requestSegmentationBatch(pageNumbers: number[]) {
+    const compressionConfig = getCompressionConfig(segmentCompressionTier);
     const pendingPages: Array<SegmentRequestPayload["pages"][number] | null> = pageNumbers.map((pageNumber) => {
       const canvas = canvasRefs.current[pageNumber];
       const status = getSegmentStatus(pageNumber);
@@ -282,9 +303,9 @@ export function PdfAreaSelector({
       }
 
       const pageImageDataUrl = canvasToCompressedDataUrl(canvas, {
-        maxWidth: 960,
+        maxWidth: compressionConfig.maxWidth,
         mimeType: "image/jpeg",
-        quality: 0.78,
+        quality: compressionConfig.quality,
       });
 
       if (!pageImageDataUrl) {
@@ -294,7 +315,7 @@ export function PdfAreaSelector({
       return {
         pageNumber,
         pageImageDataUrl,
-        textSnippet: textSnippets[pageNumber] ?? "",
+        textSnippet: (textSnippets[pageNumber] ?? "").slice(0, SEGMENT_TEXT_SNIPPET_LIMIT),
       };
     });
 
@@ -347,6 +368,24 @@ export function PdfAreaSelector({
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : "AI segmentation failed.";
+
+      if (isContextLengthErrorMessage(message)) {
+        const maxTier = SEGMENT_COMPRESSION_TIERS.length - 1;
+        if (segmentCompressionTier >= maxTier) {
+          markPagesStatus(
+            pages.map((page) => page.pageNumber),
+            "error"
+          );
+          setLoadError("입력 컨텍스트가 너무 길어 더 이상 줄일 수 없습니다. 페이지 수를 줄여 주세요.");
+          return;
+        }
+
+        setSegmentRetryAt(Date.now() + 1200);
+        setSegmentCompressionTier((current) => Math.min(current + 1, maxTier));
+        markPagesIdle(pages.map((page) => page.pageNumber));
+        setLoadError("입력 컨텍스트가 길어서 이미지 크기를 줄이고 다시 시도합니다.");
+        return;
+      }
 
       if (isQuotaErrorMessage(message)) {
         const retryDelayMs = parseRetryDelayMs(message) ?? SEGMENT_RETRY_DEFAULT_MS;
