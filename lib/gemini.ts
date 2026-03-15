@@ -1,4 +1,4 @@
-const DEFAULT_API_BASE = "https://generativelanguage.googleapis.com/v1beta";
+ï»¿const DEFAULT_API_BASE = "https://generativelanguage.googleapis.com/v1beta";
 
 export type GeminiPart = {
   text?: string;
@@ -75,7 +75,7 @@ export async function generateGeminiJson<T>({
     const outputText = extractGeminiText(raw);
 
     if (!outputText) {
-      lastErrorMessage = "Gemini ÀÀ´ä¿¡¼­ JSON ÅØ½ºÆ®¸¦ Ã£Áö ¸øÇß½À´Ï´Ù.";
+      lastErrorMessage = "Gemini response JSON text was empty.";
       if (attempt < maxAttempts - 1) {
         await delayWithBackoff(attempt);
         continue;
@@ -102,7 +102,7 @@ export function imagePartFromDataUrl(dataUrl: string): GeminiPart {
   const match = dataUrl.match(/^data:([^;,]+);base64,(.+)$/);
 
   if (!match) {
-    throw new Error("?´ë?ì§€ ?°ì´??URL ?•ì‹???½ì? ëª»í–ˆ?µë‹ˆ??");
+    throw new Error("?ëŒ€?ï§žÂ€ ?ê³—ì” ??URL ?ëº¤ë–‡???ìŽŒ? ï§ì‚µë»½?ë“¬ë•²??");
   }
 
   return {
@@ -188,7 +188,7 @@ function parseGeminiJsonText<T>(text: string) {
     try {
       return JSON.parse(candidate) as T;
     } catch (error) {
-      lastErrorMessage = error instanceof Error ? error.message : "Unknown JSON parse error";
+      lastErrorMessage = error instanceof Error ? error.message : "Gemini JSON parse failed.";
       // Try the next repaired candidate.
     }
   }
@@ -394,5 +394,6 @@ function isEscaped(text: string, quoteIndex: number) {
   }
   return backslashes % 2 === 1;
 }
+
 
 
