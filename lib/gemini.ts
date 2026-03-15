@@ -27,53 +27,82 @@ export async function generateGeminiJson<T>({
   maxOutputTokens,
   temperature = 0.1
 }: GenerateGeminiJsonOptions<T>) {
-  const response = await fetch(`${DEFAULT_API_BASE}/models/${model}:generateContent`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-goog-api-key": apiKey
-    },
-    body: JSON.stringify({
-      systemInstruction: {
-        parts: [{ text: systemInstruction }]
+  const maxAttempts = 3;
+  let lastErrorMessage = "";
+
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    const response = await fetch(`${DEFAULT_API_BASE}/models/${model}:generateContent`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-goog-api-key": apiKey
       },
-      contents: [
-        {
-          role: "user",
-          parts
+      body: JSON.stringify({
+        systemInstruction: {
+          parts: [{ text: systemInstruction }]
+        },
+        contents: [
+          {
+            role: "user",
+            parts
+          }
+        ],
+        generationConfig: {
+          responseMimeType: "application/json",
+          responseJsonSchema,
+          maxOutputTokens,
+          temperature,
+          thinkingConfig: {
+            thinkingBudget: 0
+          }
         }
-      ],
-      generationConfig: {
-        responseMimeType: "application/json",
-        responseJsonSchema,
-        maxOutputTokens,
-        temperature,
-        thinkingConfig: {
-          thinkingBudget: 0
-        }
+      })
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      lastErrorMessage = errorText || `Gemini request failed with status ${response.status}.`;
+
+      if (shouldRetryGeminiResponse(response.status, errorText) && attempt < maxAttempts - 1) {
+        await delayWithBackoff(attempt);
+        continue;
       }
-    })
-  });
 
-  if (!response.ok) {
-    throw new Error(await response.text());
+      throw new Error(lastErrorMessage);
+    }
+
+    const raw = await response.json();
+    const outputText = extractGeminiText(raw);
+
+    if (!outputText) {
+      lastErrorMessage = "Gemini ÀÀ´ä¿¡¼­ JSON ÅØ½ºÆ®¸¦ Ã£Áö ¸øÇß½À´Ï´Ù.";
+      if (attempt < maxAttempts - 1) {
+        await delayWithBackoff(attempt);
+        continue;
+      }
+      throw new Error(lastErrorMessage);
+    }
+
+    try {
+      return parseGeminiJsonText<T>(outputText);
+    } catch (error) {
+      lastErrorMessage = error instanceof Error ? error.message : "Gemini JSON parse failed.";
+      if (shouldRetryGeminiParseError(lastErrorMessage) && attempt < maxAttempts - 1) {
+        await delayWithBackoff(attempt);
+        continue;
+      }
+      throw new Error(lastErrorMessage);
+    }
   }
 
-  const raw = await response.json();
-  const outputText = extractGeminiText(raw);
-
-  if (!outputText) {
-    throw new Error("Gemini ì‘ë‹µì—ì„œ JSON í…ìŠ¤íŠ¸ë¥¼ ì°¾ì§€ ëª»í–ˆìŠµë‹ˆë‹¤.");
-  }
-
-  return parseGeminiJsonText<T>(outputText);
+  throw new Error(lastErrorMessage || "Gemini request failed.");
 }
 
 export function imagePartFromDataUrl(dataUrl: string): GeminiPart {
   const match = dataUrl.match(/^data:([^;,]+);base64,(.+)$/);
 
   if (!match) {
-    throw new Error("ì´ë¯¸ì§€ ë°ì´í„° URL í˜•ì‹ì„ ì½ì§€ ëª»í–ˆìŠµë‹ˆë‹¤.");
+    throw new Error("?´ë?ì§€ ?°ì´??URL ?•ì‹???½ì? ëª»í–ˆ?µë‹ˆ??");
   }
 
   return {
@@ -100,6 +129,29 @@ function extractGeminiText(raw: any) {
   }
 
   return typeof raw?.text === "string" ? raw.text.trim() : "";
+}
+
+function delayWithBackoff(attempt: number) {
+  const base = 1200;
+  const jitter = Math.floor(Math.random() * 260);
+  const waitMs = base * (attempt + 1) + jitter;
+  return new Promise((resolve) => setTimeout(resolve, waitMs));
+}
+
+function shouldRetryGeminiResponse(status: number, body: string) {
+  if (status === 429) {
+    return false;
+  }
+
+  if (status >= 500) {
+    return true;
+  }
+
+  return /INTERNAL|internal error|backend error/i.test(body);
+}
+
+function shouldRetryGeminiParseError(message: string) {
+  return /Gemini JSON parse failed/i.test(message);
 }
 
 function stripJsonFence(text: string) {
@@ -342,3 +394,5 @@ function isEscaped(text: string, quoteIndex: number) {
   }
   return backslashes % 2 === 1;
 }
+
+
