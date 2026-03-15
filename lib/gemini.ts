@@ -109,16 +109,24 @@ function stripJsonFence(text: string) {
 function parseGeminiJsonText<T>(text: string) {
   const stripped = stripJsonFence(text);
   const firstJsonBlock = extractFirstJsonBlock(stripped);
-  const repairedStripped = repairCommonJsonIssues(repairUnescapedNewlines(stripped));
-  const repairedFirstBlock = firstJsonBlock
-    ? repairCommonJsonIssues(repairUnescapedNewlines(firstJsonBlock))
+  const likelyJson = extractLikelyJson(stripped);
+  const sanitizedStripped = sanitizeJsonText(stripped);
+  const sanitizedLikelyJson = sanitizeJsonText(likelyJson);
+  const sanitizedFirstBlock = sanitizeJsonText(firstJsonBlock);
+  const repairedStripped = repairCommonJsonIssues(sanitizedStripped);
+  const repairedLikelyJson = repairCommonJsonIssues(sanitizedLikelyJson);
+  const repairedFirstBlock = sanitizeJsonText(firstJsonBlock)
+    ? repairCommonJsonIssues(sanitizedFirstBlock)
     : "";
   const candidates = [
     stripped,
-    extractLikelyJson(stripped),
+    likelyJson,
     firstJsonBlock,
+    sanitizedStripped,
+    sanitizedLikelyJson,
+    sanitizedFirstBlock,
     repairedStripped,
-    repairCommonJsonIssues(extractLikelyJson(stripped)),
+    repairedLikelyJson,
     repairedFirstBlock
   ].filter((candidate, index, list): candidate is string => Boolean(candidate) && list.indexOf(candidate) === index);
 
@@ -207,6 +215,16 @@ function extractFirstJsonBlock(text: string) {
   return trimmed.slice(startIndex).trim();
 }
 
+function sanitizeJsonText(text: string) {
+  if (!text) {
+    return text;
+  }
+
+  let sanitized = repairUnescapedNewlines(text);
+  sanitized = escapeUnescapedQuotesForField(sanitized, "text_snippet");
+  return sanitized;
+}
+
 function repairCommonJsonIssues(text: string) {
   return text
     .replace(/^\uFEFF/, "")
@@ -255,4 +273,72 @@ function repairUnescapedNewlines(text: string) {
   }
 
   return output;
+}
+
+function escapeUnescapedQuotesForField(text: string, fieldName: string) {
+  const needle = `"${fieldName}"`;
+  let output = "";
+  let index = 0;
+
+  while (index < text.length) {
+    const fieldIndex = text.indexOf(needle, index);
+
+    if (fieldIndex === -1) {
+      output += text.slice(index);
+      break;
+    }
+
+    output += text.slice(index, fieldIndex + needle.length);
+    let cursor = fieldIndex + needle.length;
+
+    const openerMatch = text.slice(cursor).match(/^\s*:\s*"/);
+
+    if (!openerMatch) {
+      index = cursor;
+      continue;
+    }
+
+    output += openerMatch[0];
+    cursor += openerMatch[0].length;
+
+    let endIndex = -1;
+
+    for (let scan = cursor; scan < text.length; scan += 1) {
+      const char = text[scan];
+      if (char !== '"' || isEscaped(text, scan)) {
+        continue;
+      }
+
+      let lookahead = scan + 1;
+      while (lookahead < text.length && /\s/.test(text[lookahead])) {
+        lookahead += 1;
+      }
+
+      if (text[lookahead] === "," || text[lookahead] === "}" || text[lookahead] === "]") {
+        endIndex = scan;
+        break;
+      }
+    }
+
+    if (endIndex === -1) {
+      output += text.slice(cursor);
+      return output;
+    }
+
+    const rawValue = text.slice(cursor, endIndex);
+    const escapedValue = rawValue.replace(/(^|[^\\])"/g, '$1\\"');
+    output += escapedValue;
+    output += '"';
+    index = endIndex + 1;
+  }
+
+  return output;
+}
+
+function isEscaped(text: string, quoteIndex: number) {
+  let backslashes = 0;
+  for (let index = quoteIndex - 1; index >= 0 && text[index] === "\\"; index -= 1) {
+    backslashes += 1;
+  }
+  return backslashes % 2 === 1;
 }

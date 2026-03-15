@@ -170,6 +170,7 @@ Output rules:
 - Always include the full visible question number, the full stem line, and the full choice row width.
 - Do not cut off the left or right edge of the question content.
 - Sort question_regions by real question number when visible. Otherwise use reading order.
+- text_snippet must be short and must not contain double quotes (replace " with ').
 `;
 
 const QUESTION_SEGMENT_RETRY_PROMPT = `
@@ -189,6 +190,7 @@ Output rules:
 - detected_question_count must be the number of real questions visible on that page.
 - question_regions must contain only reliable regions.
 - bounds must include full stem and full options for that single question.
+- text_snippet must be short and must not contain double quotes (replace " with ').
 `;
 
 const ANSWER_SEGMENT_PROMPT = `
@@ -209,6 +211,7 @@ Output rules:
 - segments must contain one or more tight normalized boxes in reading order.
 - Ignore page headers, section headers, and unrelated questions.
 - Do not merge two different question numbers into one item.
+- text_snippet must be short and must not contain double quotes (replace " with ').
 `;
 
 export async function POST(request: Request) {
