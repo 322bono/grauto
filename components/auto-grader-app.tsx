@@ -36,42 +36,42 @@ type GradingProgressStep = {
 };
 
 const WORKSPACE_STEPS: Array<{ id: WorkspaceStep; label: string }> = [
-  { id: "metadata", label: "?쒗뿕 ?뺣낫" },
-  { id: "questions", label: "臾몄젣 ?곸뿭" },
-  { id: "answers", label: "?듭븞 ?섏씠吏" },
-  { id: "grade", label: "梨꾩젏 ?ㅽ뻾" },
-  { id: "results", label: "寃곌낵 蹂닿린" }
+  { id: "metadata", label: "시험 정보" },
+  { id: "questions", label: "문제 영역" },
+  { id: "answers", label: "답안 페이지" },
+  { id: "grade", label: "채점 실행" },
+  { id: "results", label: "결과 보기" }
 ];
 
 const GRADE_PROGRESS_STEPS: GradingProgressStep[] = [
   {
     id: "prepare",
-    label: "?먮즺 ?뺣━ 以?,
-    detail: "?좏깮??臾몄젣? ?듭븞 ?섏씠吏瑜?梨꾩젏???뺤떇?쇰줈 ?뺣━?섍퀬 ?덉뼱??"
+    label: "자료 정리 중",
+    detail: "선택한 문제와 답안 페이지를 채점에 맞게 정리하고 있어요."
   },
   {
     id: "match",
-    label: "臾명빆 留ㅼ묶 以?,
-    detail: "臾몄젣 踰덊샇? ?듭? ?섏씠吏瑜?鍮꾧탳?댁꽌 ?뚮쭪? ?꾩튂瑜?李얘퀬 ?덉뼱??"
+    label: "문항 매칭 중",
+    detail: "문제 번호와 답안 페이지를 비교해서 정확히 맞추고 있어요."
   },
   {
     id: "grade",
-    label: "?먮룞 梨꾩젏 以?,
-    detail: "?숈깮 ?듦낵 ?뺣떟??鍮꾧탳?섎ŉ 臾명빆蹂??뺤삤瑜??먯젙?섍퀬 ?덉뼱??"
+    label: "자동 채점 중",
+    detail: "학생 답과 정답을 비교해서 문항별 정오를 판정하고 있어요."
   },
   {
     id: "feedback",
-    label: "?댁꽕 ?뺣━ 以?,
-    detail: "寃곌낵 ?붾㈃???ㅼ뼱媛??댁꽕怨?蹂듭뒿 ?ъ씤?몃? ?뺣━?섍퀬 ?덉뼱??"
+    label: "해설 정리 중",
+    detail: "결과 화면에 들어갈 해설과 복습 포인트를 정리하고 있어요."
   },
   {
     id: "save",
-    label: "寃곌낵 ???以?,
-    detail: "梨꾩젏 寃곌낵瑜??붾㈃怨?湲곕줉???덉쟾?섍쾶 諛섏쁺?섍퀬 ?덉뼱??"
+    label: "결과 저장 중",
+    detail: "채점 결과를 기록과 보고서로 저장하고 있어요."
   }
 ];
 
-const APP_VERSION = "Beta v0.3.8";
+const APP_VERSION = "Beta v0.3.9";
 const AI_REQUEST_MIN_GAP_MS = 15_000;
 
 function getTodayLocalDate() {
@@ -570,16 +570,16 @@ export function AutoGraderApp() {
         ) : (
           <div className="menu-profile menu-profile-guest">
             <button type="button" className="drawer-login-button" disabled={isSigningIn} onClick={handleSignIn}>
-              {isSigningIn ? "濡쒓렇??以?.." : "Google濡?濡쒓렇??}
+              {isSigningIn ? "??? ?..." : "Google? ???"}
             </button>
           </div>
         )}
 
         <div className="menu-meta menu-meta-auth">
           <Link className="drawer-record-link" href="/records" onClick={() => setMenuOpen(false)}>
-            <span className="drawer-record-arrow">??/span>
-            <span className="drawer-record-text">梨꾩젏 湲곕줉</span>
-            <span className="drawer-record-chevron">??/span>
+            <span className="drawer-record-arrow">&gt;</span>
+            <span className="drawer-record-text">?? ??</span>
+            <span className="drawer-record-chevron">&gt;</span>
           </Link>
         </div>
 
@@ -614,9 +614,9 @@ export function AutoGraderApp() {
                 className={`sketch-mode-button ${selectedMode === "single" ? "active" : ""}`}
                 onClick={() => handleModeChange("single")}
               >
-                ?⑥씪 PDF ?뚯씪
+                ?? PDF ??
               </button>
-              <p>??PDF ?덉뿉 臾몄젣? ?듭?媛 紐⑤몢 ?덉쓣 ??/p>
+              <p>? PDF ?? ??? ??? ?? ?? ?</p>
             </div>
 
             <div className="sketch-choice">
@@ -625,9 +625,9 @@ export function AutoGraderApp() {
                 className={`sketch-mode-button ${selectedMode === "split" ? "active" : ""}`}
                 onClick={() => handleModeChange("split")}
               >
-                ???PDF ?뚯씪
+                ?? PDF ??
               </button>
-              <p>臾몄젣 PDF? ?듭? PDF媛 遺꾨━?섏뼱 ?덉쓣 ??/p>
+              <p>?? PDF? ?? PDF? ???? ?? ?</p>
             </div>
           </div>
 
@@ -636,8 +636,12 @@ export function AutoGraderApp() {
               <div className="upload-deck">
                 <UploadTile
                   id="question-file"
-                  title={uploadMode === "single" ? "PDF ?뚯씪 ?낅줈?? : "臾몄젣吏 PDF ?낅줈??}
-                  subtitle={uploadMode === "single" ? "臾몄젣? ?듭?媛 ?④퍡 ?ㅼ뼱 ?덈뒗 PDF" : "?ъ슜?먭? ??臾몄젣吏 PDF"}
+                  title={uploadMode === "single" ? "PDF ?? ???" : "??? PDF ???"}
+                  subtitle={
+                    uploadMode === "single"
+                      ? "??? ??? ?? ?? PDF"
+                      : "???? ? ??? PDF"
+                  }
                   file={questionFile}
                   onChange={(file) => setQuestionFile(file)}
                 />
@@ -645,22 +649,22 @@ export function AutoGraderApp() {
                 {uploadMode === "split" ? (
                   <UploadTile
                     id="answer-file"
-                    title="?듭? PDF ?낅줈??
-                    subtitle="?뺣떟怨??댁꽕???ㅼ뼱 ?덈뒗 ?듭? PDF"
+                    title="?? PDF ???"
+                    subtitle="??? ??? ?? ?? ?? PDF"
                     file={answerFile}
                     onChange={(file) => setAnswerFile(file)}
                   />
                 ) : (
                   <div className="upload-hint-card">
-                    <strong>?⑥씪 PDF 紐⑤뱶</strong>
-                    <span>?낅줈?쒗븳 ??媛쒖쓽 PDF瑜?臾몄젣 ?섏씠吏? ?듭븞 ?섏씠吏 ?좏깮???④퍡 ?ъ슜?⑸땲??</span>
+                    <strong>?? PDF ??</strong>
+                    <span>???? ? ?? PDF? ?? ???? ?? ??? ??? ?? ?????.</span>
                   </div>
                 )}
               </div>
 
               <div className="upload-footer">
                 <button type="button" className="cta" disabled={!uploadReady} onClick={goToWorkspace}>
-                  {uploadReady ? "?ㅼ쓬" : "PDF瑜?癒쇱? ?좏깮??二쇱꽭??}
+                  {uploadReady ? "??" : "PDF? ?? ??? ???"}
                 </button>
               </div>
             </div>
@@ -682,8 +686,8 @@ export function AutoGraderApp() {
             <div className="card pad stack step-shell">
               <div className="selector-head">
                 <div>
-                  <h2 className="section-title">?④퀎蹂?梨꾩젏 吏꾪뻾</h2>
-                  <p className="subtle">??踰덉뿉 ?섎굹?⑸쭔 蹂댁씠?꾨줉 援ъ꽦?덉뒿?덈떎. ?꾨옒 ?④퀎 ?쒖꽌?濡?吏꾪뻾?섎㈃ ?⑸땲??</p>
+                  <h2 className="section-title">?? ?? ??</h2>
+                  <p className="subtle">??? ??? ?? ???? ???? ?? ??? ?????.</p>
                 </div>
                 <span className="status ok">
                   {currentStepIndex + 1} / {WORKSPACE_STEPS.length}
@@ -737,11 +741,9 @@ export function AutoGraderApp() {
                   onRegionsChange={setQuestionSelections}
                 />
                 <div className="card pad step-actions">
-                  <div className="subtle">?꾩옱 ?좏깮??臾몄젣 臾명빆: {selectionSummary.questionCount}媛?/div>
+                  <div className="subtle">?꾩옱 ?좏깮??臾몄젣 臾명빆: {selectionSummary.questionCount}媛</div>
                   <div className="button-row">
-                    <button type="button" className="cta ghost" onClick={moveToPreviousStep}>
-                      ?댁쟾
-                    </button>
+                    <button type="button" className="cta ghost" onClick={moveToPreviousStep}>??</button>
                     <button type="button" className="cta" disabled={selectionSummary.questionCount === 0} onClick={moveToNextStep}>
                       ?ㅼ쓬
                     </button>
@@ -761,7 +763,7 @@ export function AutoGraderApp() {
                   onPagesChange={setAnswerPages}
                 />
                 <div className="card pad step-actions">
-                  <div className="subtle">?꾩옱 ?좏깮???듭븞 ?섏씠吏: {selectionSummary.answerCount}媛?/div>
+                  <div className="subtle">?꾩옱 ?좏깮???듭븞 ?섏씠吏: {selectionSummary.answerCount}媛</div>
                   <div className="button-row">
                     <button type="button" className="cta ghost" onClick={moveToPreviousStep}>
                       ?댁쟾
@@ -783,23 +785,23 @@ export function AutoGraderApp() {
                       <p className="subtle">?좏깮??臾명빆怨??듭븞 ?섏씠吏瑜?諛뷀깢?쇰줈 Gemini 2.5 Flash ?먮룞 梨꾩젏???ㅽ뻾?⑸땲??</p>
                     </div>
                     <div className="button-row">
-                      <span className="status warn">臾몄젣 {selectionSummary.questionCount}媛?/span>
-                      <span className="status warn">?듭븞 ?섏씠吏 {selectionSummary.answerCount}媛?/span>
+                      <span className="status warn">?? {selectionSummary.questionCount}?</span>
+                      <span className="status warn">?? ??? {selectionSummary.answerCount}?</span>
                     </div>
                   </div>
 
                   <div className="detail-grid">
                     <div className="detail-row">
-                      <strong>?낅줈??紐⑤뱶</strong>
-                      <p style={{ marginBottom: 0 }}>{uploadMode === "single" ? "?⑥씪 PDF" : "???PDF"}</p>
+                      <strong>??? ??</strong>
+                      <p style={{ marginBottom: 0 }}>{uploadMode === "single" ? "?? PDF" : "?? PDF"}</p>
                     </div>
                     <div className="detail-row">
-                      <strong>臾몄젣 ?뚯씪</strong>
-                      <p style={{ marginBottom: 0 }}>{questionFile?.name ?? "誘몄꽑??}</p>
+                      <strong>?? ??</strong>
+                      <p style={{ marginBottom: 0 }}>{questionFile?.name ?? "???"}</p>
                     </div>
                     <div className="detail-row">
-                      <strong>?듭븞 ?뚯씪</strong>
-                      <p style={{ marginBottom: 0 }}>{effectiveAnswerFile?.name ?? "誘몄꽑??}</p>
+                      <strong>?? ??</strong>
+                      <p style={{ marginBottom: 0 }}>{effectiveAnswerFile?.name ?? "???"}</p>
                     </div>
                   </div>
                 </div>
@@ -810,7 +812,7 @@ export function AutoGraderApp() {
                       ?댁쟾
                     </button>
                     <button type="button" className="cta" disabled={isSubmitting || isSyncing} onClick={gradeExam}>
-                      {isSubmitting ? "梨꾩젏 以?.." : "梨꾩젏 ?쒖옉"}
+                      {isSubmitting ? "?? ?..." : "?? ??"}
                     </button>
                   </div>
                 </div>
@@ -875,12 +877,18 @@ function GradingProgressOverlay({
     <div className="grading-overlay" aria-live="polite" aria-busy="true">
       <div className="grading-overlay-card">
         <span className="grading-overlay-kicker">Grauto</span>
-        <h2 className="grading-overlay-title">梨꾩젏 吏꾪뻾 以?/h2>
+        <h2 className="grading-overlay-title">?? ?? ?</h2>
         <p className="grading-overlay-copy">{currentStep.detail}</p>
 
-        <div className="grading-progress-shell" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progressPercent}>
+        <div
+          className="grading-progress-shell"
+          role="progressbar"
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={progressPercent}
+        >
           <div className="grading-progress-bar">
-            <span style={{ width: `${progressPercent}%` }} />
+            <span style={{ width: String(progressPercent) + "%" }} />
           </div>
           <strong>{progressPercent}%</strong>
         </div>
@@ -897,7 +905,7 @@ function GradingProgressOverlay({
             const state = index < progressIndex ? "done" : index === progressIndex ? "active" : "idle";
 
             return (
-              <div key={step.id} className={`grading-step-chip ${state}`}>
+              <div key={step.id} className={"grading-step-chip " + state}>
                 <span>{index + 1}</span>
                 <div>
                   <strong>{step.label}</strong>
@@ -909,15 +917,14 @@ function GradingProgressOverlay({
         </div>
 
         <div className="grading-overlay-meta">
-          <span>臾몄젣 {questionCount}媛?/span>
-          <span>?듭븞 ?섏씠吏 {answerCount}媛?/span>
-          <span>{elapsedSeconds}珥?寃쎄낵</span>
+          <span>?? {questionCount}?</span>
+          <span>?? ??? {answerCount}?</span>
+          <span>{elapsedSeconds}? ??</span>
         </div>
       </div>
     </div>
   );
 }
-
 function UploadTile({
   id,
   title,
@@ -942,6 +949,9 @@ function UploadTile({
     </label>
   );
 }
+
+
+
 
 
 
