@@ -222,7 +222,7 @@ export async function POST(request: Request) {
   }
 
   const apiKey = process.env.GEMINI_API_KEY;
-  const model = process.env.GEMINI_MODEL ?? "gemini-2.5-pro";
+  const model = process.env.GEMINI_MODEL ?? "gemini-3.1-flash-lite-preview";
 
   if (!apiKey) {
     return new NextResponse("GEMINI_API_KEY is missing.", { status: 500 });

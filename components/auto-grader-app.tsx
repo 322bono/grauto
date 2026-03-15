@@ -71,7 +71,7 @@ const GRADE_PROGRESS_STEPS: GradingProgressStep[] = [
   }
 ];
 
-const APP_VERSION = "Beta v0.3.9";
+const APP_VERSION = "Beta v0.3.10";
 const AI_REQUEST_MIN_GAP_MS = 15_000;
 
 function getTodayLocalDate() {
