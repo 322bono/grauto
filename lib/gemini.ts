@@ -102,7 +102,7 @@ export function imagePartFromDataUrl(dataUrl: string): GeminiPart {
   const match = dataUrl.match(/^data:([^;,]+);base64,(.+)$/);
 
   if (!match) {
-    throw new Error("?대?吏 ?곗씠??URL ?뺤떇???쎌? 紐삵뻽?듬땲??");
+    throw new Error("이미지 데이터 URL 형식을 읽지 못했습니다.");
   }
 
   return {
@@ -394,6 +394,5 @@ function isEscaped(text: string, quoteIndex: number) {
   }
   return backslashes % 2 === 1;
 }
-
 
 

@@ -71,7 +71,7 @@ const GRADE_PROGRESS_STEPS: GradingProgressStep[] = [
   }
 ];
 
-const APP_VERSION = "Beta v0.3.10";
+const APP_VERSION = "Beta v0.3.11";
 const AI_REQUEST_MIN_GAP_MS = 15_000;
 
 function getTodayLocalDate() {
@@ -81,9 +81,9 @@ function getTodayLocalDate() {
 }
 
 const defaultMetadata: ExamMetadata = {
-  subject: "?섑븰",
+  subject: "수학",
   examName: "",
-  difficulty: "蹂댄넻",
+  difficulty: "보통",
   durationMinutes: null,
   takenAt: "",
   memo: ""
@@ -176,7 +176,7 @@ export function AutoGraderApp() {
       await signInWithGoogle();
       setMenuOpen(false);
     } catch (error) {
-      window.alert(error instanceof Error ? error.message : "Google 濡쒓렇?몄뿉 ?ㅽ뙣?덉뒿?덈떎.");
+      window.alert(error instanceof Error ? error.message : "Google 로그인에 실패했습니다.");
     } finally {
       setIsSigningIn(false);
     }
@@ -188,7 +188,7 @@ export function AutoGraderApp() {
       setCurrentCloudSync(undefined);
       setMenuOpen(false);
     } catch (error) {
-      window.alert(error instanceof Error ? error.message : "濡쒓렇?꾩썐???ㅽ뙣?덉뒿?덈떎.");
+      window.alert(error instanceof Error ? error.message : "로그아웃에 실패했습니다.");
     }
   }
 
@@ -231,7 +231,7 @@ export function AutoGraderApp() {
 
       return syncedRecord;
     } catch (error) {
-      window.alert(error instanceof Error ? error.message : "?대씪?곕뱶 ?낅줈?쒖뿉 ?ㅽ뙣?덉뒿?덈떎.");
+      window.alert(error instanceof Error ? error.message : "클라우드 업로드에 실패했습니다.");
       return record;
     } finally {
       setIsSyncing(false);
@@ -240,7 +240,7 @@ export function AutoGraderApp() {
 
   async function gradeExam() {
     if (!questionFile || !effectiveAnswerFile || questionSelections.length === 0 || answerPages.length === 0) {
-      window.alert("臾몄젣 ?곸뿭怨??듭븞 ?섏씠吏瑜?癒쇱? ?좏깮??二쇱꽭??");
+      window.alert("문제 영역과 답안 페이지를 먼저 선택해 주세요.");
       return;
     }
 
@@ -252,7 +252,7 @@ export function AutoGraderApp() {
     );
 
     if (pendingQuestionImages || pendingAnswerImages) {
-      window.alert("?섏씠吏 ?대?吏瑜??꾩쭅 以鍮?以묒엯?덈떎. 1~2珥덈쭔 湲곕떎由????ㅼ떆 ?쒕룄??二쇱꽭??");
+      window.alert("페이지 이미지를 아직 준비 중입니다. 1~2초만 기다린 뒤 다시 시도해 주세요.");
       return;
     }
 
@@ -277,7 +277,7 @@ export function AutoGraderApp() {
 
     if (payloadBytes > 3_800_000) {
       setIsSubmitting(false);
-      window.alert("?좏깮???섏씠吏媛 ?덈Т 留롮븘????踰덉뿉 梨꾩젏 ?붿껌??蹂대궪 ???놁뒿?덈떎. ?듭븞 ?섏씠吏瑜??꾩슂??踰붿쐞濡?議곌툑留?以꾩뿬 二쇱꽭??");
+      window.alert("선택한 페이지가 너무 많아 한 번에 채점 요청을 보낼 수 없습니다. 답안 페이지를 필요한 범위로 조금만 줄여 주세요.");
       return;
     }
 
@@ -327,7 +327,7 @@ export function AutoGraderApp() {
 
       setWorkspaceStep("results");
     } catch (error) {
-      window.alert(error instanceof Error ? error.message : "梨꾩젏 以??ㅻ쪟媛 諛쒖깮?덉뒿?덈떎.");
+      window.alert(error instanceof Error ? error.message : "채점 중 오류가 발생했습니다.");
     } finally {
       setIsSubmitting(false);
     }
@@ -360,7 +360,7 @@ export function AutoGraderApp() {
       try {
         await updateCloudRecordSummary(authUser.uid, updatedRecord, updated);
       } catch (error) {
-        window.alert(error instanceof Error ? error.message : "?대씪?곕뱶 湲곕줉 媛깆떊???ㅽ뙣?덉뒿?덈떎.");
+        window.alert(error instanceof Error ? error.message : "클라우드 기록 갱신에 실패했습니다.");
       }
     }
   }
@@ -377,7 +377,7 @@ export function AutoGraderApp() {
       : null;
 
     if (!question || !selection) {
-      window.alert("遺꾩꽍??臾명빆 ?뺣낫瑜?李얠? 紐삵뻽?듬땲??");
+      window.alert("분석할 문항 정보를 찾지 못했습니다.");
       return;
     }
 
@@ -449,7 +449,7 @@ export function AutoGraderApp() {
         await updateCloudRecordSummary(authUser.uid, updatedRecord, updatedResult);
       }
     } catch (error) {
-      window.alert(error instanceof Error ? error.message : "異붽? 遺꾩꽍 ?붿껌???ㅽ뙣?덉뒿?덈떎.");
+      window.alert(error instanceof Error ? error.message : "추가 분석 요청에 실패했습니다.");
     }
   }
 
@@ -541,7 +541,7 @@ export function AutoGraderApp() {
         <button
           type="button"
           className={`menu-trigger ${menuOpen ? "open" : ""}`}
-          aria-label="硫붾돱 ?닿린"
+          aria-label="메뉴 열기"
           onClick={() => setMenuOpen((current) => !current)}
         >
           <span />
@@ -570,7 +570,7 @@ export function AutoGraderApp() {
         ) : (
           <div className="menu-profile menu-profile-guest">
             <button type="button" className="drawer-login-button" disabled={isSigningIn} onClick={handleSignIn}>
-              {isSigningIn ? "??? ?..." : "Google? ???"}
+              {isSigningIn ? "로그인 중..." : "Google로 로그인"}
             </button>
           </div>
         )}
@@ -578,7 +578,7 @@ export function AutoGraderApp() {
         <div className="menu-meta menu-meta-auth">
           <Link className="drawer-record-link" href="/records" onClick={() => setMenuOpen(false)}>
             <span className="drawer-record-arrow">&gt;</span>
-            <span className="drawer-record-text">?? ??</span>
+            <span className="drawer-record-text">채점 기록</span>
             <span className="drawer-record-chevron">&gt;</span>
           </Link>
         </div>
@@ -588,7 +588,7 @@ export function AutoGraderApp() {
           {authUser ? (
             <div className="menu-foot-actions">
               <button type="button" className="drawer-logout-button" onClick={handleSignOut}>
-                濡쒓렇?꾩썐
+                로그아웃
               </button>
               <span className="drawer-version">{APP_VERSION}</span>
             </div>
@@ -601,7 +601,7 @@ export function AutoGraderApp() {
           <div className="sketch-copy">
             <h1 className="sketch-title">
               <span className="sketch-title-line">
-                ?댁젣??<span className="accent">梨꾩젏源뚯?</span> ?먮룞?쇰줈.
+                이제는 <span className="accent">채점까지</span> 자동으로.
               </span>
             </h1>
             <div className="sketch-subtitle">Grauto</div>
@@ -609,25 +609,25 @@ export function AutoGraderApp() {
 
           <div className="sketch-choice-row">
             <div className="sketch-choice">
-              <button
-                type="button"
-                className={`sketch-mode-button ${selectedMode === "single" ? "active" : ""}`}
-                onClick={() => handleModeChange("single")}
-              >
-                ?? PDF ??
-              </button>
-              <p>? PDF ?? ??? ??? ?? ?? ?</p>
+                <button
+                  type="button"
+                  className={`sketch-mode-button ${selectedMode === "single" ? "active" : ""}`}
+                  onClick={() => handleModeChange("single")}
+                >
+                  단일 PDF 파일
+                </button>
+                <p>한 PDF 안에 문제와 답지가 모두 있을 때</p>
             </div>
 
             <div className="sketch-choice">
-              <button
-                type="button"
-                className={`sketch-mode-button ${selectedMode === "split" ? "active" : ""}`}
-                onClick={() => handleModeChange("split")}
-              >
-                ?? PDF ??
-              </button>
-              <p>?? PDF? ?? PDF? ???? ?? ?</p>
+                <button
+                  type="button"
+                  className={`sketch-mode-button ${selectedMode === "split" ? "active" : ""}`}
+                  onClick={() => handleModeChange("split")}
+                >
+                  듀얼 PDF 파일
+                </button>
+                <p>문제 PDF와 답지 PDF가 분리되어 있을 때</p>
             </div>
           </div>
 
@@ -636,11 +636,11 @@ export function AutoGraderApp() {
               <div className="upload-deck">
                 <UploadTile
                   id="question-file"
-                  title={uploadMode === "single" ? "PDF ?? ???" : "??? PDF ???"}
+                  title={uploadMode === "single" ? "PDF 파일 업로드" : "문제 PDF 업로드"}
                   subtitle={
                     uploadMode === "single"
-                      ? "??? ??? ?? ?? PDF"
-                      : "???? ? ??? PDF"
+                      ? "문제와 답지가 함께 들어 있는 PDF"
+                      : "문제가 들어 있는 PDF"
                   }
                   file={questionFile}
                   onChange={(file) => setQuestionFile(file)}
@@ -649,22 +649,22 @@ export function AutoGraderApp() {
                 {uploadMode === "split" ? (
                   <UploadTile
                     id="answer-file"
-                    title="?? PDF ???"
-                    subtitle="??? ??? ?? ?? ?? PDF"
+                    title="답지 PDF 업로드"
+                    subtitle="정답과 해설이 들어 있는 답지 PDF"
                     file={answerFile}
                     onChange={(file) => setAnswerFile(file)}
                   />
                 ) : (
                   <div className="upload-hint-card">
-                    <strong>?? PDF ??</strong>
-                    <span>???? ? ?? PDF? ?? ???? ?? ??? ??? ?? ?????.</span>
+                    <strong>단일 PDF 모드</strong>
+                    <span>업로드한 한 개의 PDF를 문제 페이지와 답안 페이지 선택에 함께 사용합니다.</span>
                   </div>
                 )}
               </div>
 
               <div className="upload-footer">
                 <button type="button" className="cta" disabled={!uploadReady} onClick={goToWorkspace}>
-                  {uploadReady ? "??" : "PDF? ?? ??? ???"}
+                  {uploadReady ? "다음" : "PDF를 먼저 선택해 주세요"}
                 </button>
               </div>
             </div>
@@ -675,7 +675,7 @@ export function AutoGraderApp() {
           <section className="workspace-shell stack">
             <div className="workspace-top">
               <button type="button" className="cta ghost" onClick={() => setStage("landing")}>
-                泥섏쓬 ?붾㈃?쇰줈
+                처음 화면으로
               </button>
               <div className="topbar-brand">
                 <div className="brand-dot" />
@@ -686,8 +686,8 @@ export function AutoGraderApp() {
             <div className="card pad stack step-shell">
               <div className="selector-head">
                 <div>
-                  <h2 className="section-title">?? ?? ??</h2>
-                  <p className="subtle">??? ??? ?? ???? ???? ?? ??? ?????.</p>
+                  <h2 className="section-title">자동 채점 준비</h2>
+                  <p className="subtle">한 단계씩 진행하면서 필요한 PDF와 문항을 선택해 주세요.</p>
                 </div>
                 <span className="status ok">
                   {currentStepIndex + 1} / {WORKSPACE_STEPS.length}
@@ -720,10 +720,10 @@ export function AutoGraderApp() {
               <div className="step-panel stack">
                 <ExamMetadataForm metadata={metadata} onChange={setMetadata} />
                 <div className="card pad step-actions">
-                  <div className="subtle">?쒗뿕 ?뺣낫???좏깮 ?ы빆?낅땲?? 鍮꾩썙 ?щ룄 ?ㅼ쓬 ?④퀎濡??섏뼱媛????덉뒿?덈떎.</div>
+                  <div className="subtle">시험 정보는 선택 사항입니다. 비워 둬도 다음 단계로 넘어갈 수 있습니다.</div>
                   <div className="button-row">
                     <button type="button" className="cta" onClick={moveToNextStep}>
-                      ?ㅼ쓬
+                      다음
                     </button>
                   </div>
                 </div>
@@ -733,19 +733,19 @@ export function AutoGraderApp() {
             {workspaceStep === "questions" ? (
               <div className="step-panel stack">
                 <PdfAreaSelector
-                  title="臾몄젣 ?곸뿭 ?좏깮"
-                  helperText="臾몄젣媛 ?ㅼ뼱 ?덈뒗 ?섏씠吏瑜?怨좊Ⅴ硫? 洹??덉쓽 臾명빆???먮룞?쇰줈 ?섎씪??梨꾩젏?⑹쑝濡??ъ슜?⑸땲??"
+                  title="문제 영역 선택"
+                  helperText="문제가 들어 있는 페이지를 고르면 그 안의 문항을 자동으로 분리해 채점에 사용합니다."
                   file={questionFile}
                   selectionMode="region"
-                  accentLabel="臾몄젣 ?좏깮"
+                  accentLabel="문제 선택"
                   onRegionsChange={setQuestionSelections}
                 />
                 <div className="card pad step-actions">
-                  <div className="subtle">?꾩옱 ?좏깮??臾몄젣 臾명빆: {selectionSummary.questionCount}媛</div>
+                  <div className="subtle">현재 선택한 문제 문항: {selectionSummary.questionCount}개</div>
                   <div className="button-row">
-                    <button type="button" className="cta ghost" onClick={moveToPreviousStep}>??</button>
+                    <button type="button" className="cta ghost" onClick={moveToPreviousStep}>이전</button>
                     <button type="button" className="cta" disabled={selectionSummary.questionCount === 0} onClick={moveToNextStep}>
-                      ?ㅼ쓬
+                      다음
                     </button>
                   </div>
                 </div>
@@ -755,21 +755,21 @@ export function AutoGraderApp() {
             {workspaceStep === "answers" ? (
               <div className="step-panel stack">
                 <PdfAreaSelector
-                  title="?듭븞 / ?댁꽕 ?섏씠吏 ?좏깮"
-                  helperText="?뺣떟怨??댁꽕???ㅼ뼱 ?덈뒗 ?섏씠吏瑜?怨좊Ⅴ硫?臾명빆 踰덊샇? ?섏씠吏 ?뚰듃瑜?諛뷀깢?쇰줈 ?먮룞 留ㅼ묶?⑸땲??"
+                  title="답안 / 해설 페이지 선택"
+                  helperText="정답과 해설이 들어 있는 페이지를 고르면 문항 번호와 페이지 힌트를 바탕으로 자동 매칭합니다."
                   file={effectiveAnswerFile}
                   selectionMode="page"
-                  accentLabel="?듭븞 ?섏씠吏 ?좏깮"
+                  accentLabel="답안 페이지 선택"
                   onPagesChange={setAnswerPages}
                 />
                 <div className="card pad step-actions">
-                  <div className="subtle">?꾩옱 ?좏깮???듭븞 ?섏씠吏: {selectionSummary.answerCount}媛</div>
+                  <div className="subtle">현재 선택한 답안 페이지: {selectionSummary.answerCount}개</div>
                   <div className="button-row">
                     <button type="button" className="cta ghost" onClick={moveToPreviousStep}>
-                      ?댁쟾
+                      이전
                     </button>
                     <button type="button" className="cta" disabled={selectionSummary.answerCount === 0} onClick={moveToNextStep}>
-                      ?ㅼ쓬
+                      다음
                     </button>
                   </div>
                 </div>
@@ -781,27 +781,27 @@ export function AutoGraderApp() {
                 <div className="card pad stack">
                   <div className="selector-head">
                     <div>
-                      <h2 className="section-title">?먮룞 梨꾩젏 ?ㅽ뻾</h2>
-                      <p className="subtle">?좏깮??臾명빆怨??듭븞 ?섏씠吏瑜?諛뷀깢?쇰줈 Gemini 2.5 Flash ?먮룞 梨꾩젏???ㅽ뻾?⑸땲??</p>
+                      <h2 className="section-title">자동 채점 실행</h2>
+                      <p className="subtle">선택한 문항과 답안 페이지를 바탕으로 Gemini 3.1 Flash Lite 자동 채점을 실행합니다.</p>
                     </div>
                     <div className="button-row">
-                      <span className="status warn">?? {selectionSummary.questionCount}?</span>
-                      <span className="status warn">?? ??? {selectionSummary.answerCount}?</span>
+                      <span className="status warn">문제 {selectionSummary.questionCount}개</span>
+                      <span className="status warn">답안 페이지 {selectionSummary.answerCount}개</span>
                     </div>
                   </div>
 
                   <div className="detail-grid">
                     <div className="detail-row">
-                      <strong>??? ??</strong>
-                      <p style={{ marginBottom: 0 }}>{uploadMode === "single" ? "?? PDF" : "?? PDF"}</p>
+                      <strong>업로드 모드</strong>
+                      <p style={{ marginBottom: 0 }}>{uploadMode === "single" ? "단일 PDF" : "듀얼 PDF"}</p>
                     </div>
                     <div className="detail-row">
-                      <strong>?? ??</strong>
-                      <p style={{ marginBottom: 0 }}>{questionFile?.name ?? "???"}</p>
+                      <strong>문제 파일</strong>
+                      <p style={{ marginBottom: 0 }}>{questionFile?.name ?? "없음"}</p>
                     </div>
                     <div className="detail-row">
-                      <strong>?? ??</strong>
-                      <p style={{ marginBottom: 0 }}>{effectiveAnswerFile?.name ?? "???"}</p>
+                      <strong>답안 파일</strong>
+                      <p style={{ marginBottom: 0 }}>{effectiveAnswerFile?.name ?? "없음"}</p>
                     </div>
                   </div>
                 </div>
@@ -809,10 +809,10 @@ export function AutoGraderApp() {
                 <div className="card pad step-actions">
                   <div className="button-row">
                     <button type="button" className="cta ghost" onClick={moveToPreviousStep}>
-                      ?댁쟾
+                      이전
                     </button>
                     <button type="button" className="cta" disabled={isSubmitting || isSyncing} onClick={gradeExam}>
-                      {isSubmitting ? "?? ?..." : "?? ??"}
+                      {isSubmitting ? "채점 중..." : "채점 시작"}
                     </button>
                   </div>
                 </div>
@@ -833,21 +833,22 @@ export function AutoGraderApp() {
                     />
 
                     <div className="card pad step-actions">
-                      <div className="subtle">梨꾩젏 湲곕줉? 硫붾돱??`梨꾩젏 湲곕줉` ?먮뒗 ?꾨옒 踰꾪듉?먯꽌 ?ㅼ떆 ?????덉뒿?덈떎.</div>
+                      <div className="subtle">채점 기록은 메뉴의 `채점 기록` 또는 아래 버튼에서 다시 볼 수 있습니다.</div>
                       <div className="button-row">
                         <button type="button" className="cta ghost" onClick={() => setWorkspaceStep("grade")}>
-                          梨꾩젏 ?④퀎濡??뚯븘媛湲?                        </button>
+                          채점 단계로 돌아가기
+                        </button>
                         <Link className="cta ghost" href="/records">
-                          梨꾩젏 湲곕줉 蹂닿린
+                          채점 기록 보기
                         </Link>
                         <button type="button" className="cta" onClick={() => setStage("landing")}>
-                          ??PDF ?좏깮
+                          다른 PDF 선택
                         </button>
                       </div>
                     </div>
                   </>
                 ) : (
-                  <div className="empty">?꾩쭅 梨꾩젏 寃곌낵媛 ?놁뒿?덈떎. 梨꾩젏 ?ㅽ뻾 ?④퀎?먯꽌 癒쇱? 梨꾩젏???쒖옉??二쇱꽭??</div>
+                  <div className="empty">아직 채점 결과가 없습니다. 채점 실행 단계에서 먼저 채점을 시작해 주세요.</div>
                 )}
               </div>
             ) : null}
@@ -877,7 +878,7 @@ function GradingProgressOverlay({
     <div className="grading-overlay" aria-live="polite" aria-busy="true">
       <div className="grading-overlay-card">
         <span className="grading-overlay-kicker">Grauto</span>
-        <h2 className="grading-overlay-title">?? ?? ?</h2>
+        <h2 className="grading-overlay-title">채점 진행 중</h2>
         <p className="grading-overlay-copy">{currentStep.detail}</p>
 
         <div
@@ -917,9 +918,9 @@ function GradingProgressOverlay({
         </div>
 
         <div className="grading-overlay-meta">
-          <span>?? {questionCount}?</span>
-          <span>?? ??? {answerCount}?</span>
-          <span>{elapsedSeconds}? ??</span>
+          <span>문제 {questionCount}개</span>
+          <span>답안 페이지 {answerCount}개</span>
+          <span>{elapsedSeconds}초 경과</span>
         </div>
       </div>
     </div>
@@ -945,7 +946,7 @@ function UploadTile({
         <strong>{title}</strong>
         <span>{subtitle}</span>
       </div>
-      <div className={`upload-file-chip ${file ? "filled" : ""}`}>{file ? file.name : "PDF ?좏깮"}</div>
+      <div className={`upload-file-chip ${file ? "filled" : ""}`}>{file ? file.name : "PDF 선택"}</div>
     </label>
   );
 }

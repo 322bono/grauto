@@ -242,7 +242,7 @@ export async function POST(request: Request) {
     const message = error instanceof Error ? error.message : "Segmentation failed.";
 
     if (isQuotaError(message)) {
-      return new NextResponse("Gemini 무료 등급 분당 요청 제한에 걸렸습니다. 잠시 후 다시 시도해 주세요.", {
+      return new NextResponse("Gemini \ubb34\ub8cc \ub4f1\uae09 \ubd84\ub2f9 \uc694\uccad \uc81c\ud55c\uc5d0 \uac78\ub838\uc2b5\ub2c8\ub2e4. \uc7a0\uc2dc \ud6c4 \ub2e4\uc2dc \uc2dc\ub3c4\ud574 \uc8fc\uc138\uc694.", {
         status: 429,
       });
     }
